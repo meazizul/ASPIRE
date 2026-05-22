@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aspire Live</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+<style>
+  body { background:#0a0a0a; color:#eaeaea; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
+  .pulse { animation: pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+  input[type=range].scrub {
+    -webkit-appearance: none; appearance: none;
+    width: 100%; height: 6px; background: #1f2937; border-radius: 3px; outline: none;
+  }
+  input[type=range].scrub::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: #10b981; cursor: pointer; border: 2px solid #064e3b;
+  }
+  input[type=range].scrub::-moz-range-thumb {
+    width: 16px; height: 16px; border-radius: 50%;
+    background: #10b981; cursor: pointer; border: 2px solid #064e3b;
+  }
+</style>
+</head>
+<body class="min-h-screen flex flex-col items-center p-6">
+
+<div class="w-full max-w-2xl">
+
+  <h1 class="text-3xl font-semibold mb-1 text-center">Aspire Live</h1>
+  <div id="latency" class="text-sm text-gray-400 mb-1 text-center">—</div>
+  <div id="mstate" class="text-xs text-gray-500 mb-2 text-center">—</div>
+
+  <div class="text-center mb-4">
+    <label class="inline-flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none">
+      <input id="lowLatencyToggle" type="checkbox" class="accent-emerald-500">
+      Low-latency mode (WebRTC, may stutter)
+    </label>
+  </div>
+
+  <audio id="player" preload="auto" playsinline class="hidden"></audio>
+
+  <div id="startWrap" class="flex justify-center">
+    <button id="startBtn"
+            class="bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 text-black font-semibold rounded-lg px-10 py-5 text-lg min-w-[12rem] focus:outline-none focus:ring-4 focus:ring-emerald-300">
+      Start listening
+    </button>
+  </div>
+
+  <div id="bufferWrap" class="hidden flex flex-col items-center mt-4">
+    <div class="flex items-center gap-3 mb-2">
+      <span class="inline-block w-3 h-3 rounded-full bg-amber-400 pulse"></span>
+      <span class="text-amber-300 font-medium">Buffering — please wait ~10 seconds…</span>
+    </div>
+    <div class="text-xs text-gray-500">Holding audio ~30–60s behind live for smoothness.</div>
+    <div class="mt-3 w-64 h-2 bg-gray-800 rounded-full overflow-hidden">
+      <div id="bufferBar" class="h-full bg-amber-400 transition-all" style="width:0%"></div>
+    </div>
+    <div id="bufferDetail" class="text-xs text-gray-500 mt-1">0 / 10s</div>
+  </div>
+
+  <div id="transport" class="hidden mt-2">
+    <div class="flex items-center gap-3 mb-2">
+      <button id="playBtn" class="bg-gray-800 hover:bg-gray-700 text-white rounded-md px-3 py-2 text-sm">⏸︎ Pause</button>
+      <button id="liveBtn" class="text-xs uppercase tracking-wider px-3 py-2 rounded-md bg-red-600 hover:bg-red-500 text-white">● LIVE</button>
+      <div id="behindLabel" class="text-xs text-gray-400 ml-auto">at live</div>
+    </div>
+    <input id="scrub" class="scrub" type="range" min="0" max="120" step="1" value="0"
+           aria-label="Scrub backward — drag right to go further back in time" />
+    <div class="flex justify-between text-xs text-gray-500 mt-1">
+      <span id="oldestLabel">−120s</span>
+      <span class="text-gray-400">drag back to replay · cannot scrub forward of live</span>
+      <span>now</span>
+    </div>
+  </div>
+
+  <div id="speakingWrap" class="mt-8 hidden">
+    <div class="text-xs uppercase tracking-wider text-emerald-400 mb-2">Now speaking</div>
+    <div class="border-l-4 border-emerald-500 bg-emerald-950/30 pl-4 py-3 rounded-r">
+      <div id="speakingOcr" class="text-xs text-gray-400 italic mb-1 hidden"></div>
+      <div id="speaking" class="text-emerald-100"></div>
+    </div>
+  </div>
+
+  <div class="mt-8">
+    <div class="text-xs uppercase tracking-wider text-gray-400 mb-2">Recent slide descriptions</div>
+    <ul id="captions" class="space-y-2 text-gray-200"></ul>
+  </div>
+
+  <p class="mt-8 text-xs text-gray-500 text-center">
+    Default mode buffers ~10–30 seconds for smooth playback.
+    Slide descriptions arrive when the speaker pauses.
+  </p>
+
+  <div class="mt-6 mb-4 flex flex-col items-center">
+    <button id="markStutterBtn"
+            class="bg-red-600 hover:bg-red-500 active:bg-red-700 text-white rounded-md px-5 py-3 text-sm font-medium min-w-[10rem]"
+            aria-label="Mark a stutter at the current moment">
+      Mark stutter
+    </button>
+    <div id="markToast"
+         class="mt-2 text-xs text-emerald-400 opacity-0 transition-opacity"
+         role="status" aria-live="polite">
+      Marked
+    </div>
+  </div>
+
+</div>
+
+<script>
+const $btn = document.getElementById("startBtn");
+const $startWrap = document.getElementById("startWrap");
+const $transport = document.getElementById("transport");
+const $playBtn = document.getElementById("playBtn");
+const $liveBtn = document.getElementById("liveBtn");
+const $scrub = document.getElementById("scrub");
+const $oldestLabel = document.getElementById("oldestLabel");
+const $behindLabel = document.getElementById("behindLabel");
+const $speakingWrap = document.getElementById("speakingWrap");
+const $speaking = document.getElementById("speaking");
+const $speakingOcr = document.getElementById("speakingOcr");
+const $audio = document.getElementById("player");
+const $caps = document.getElementById("captions");
+const $lat = document.getElementById("latency");
+const $mstate = document.getElementById("mstate");
+const $low = document.getElementById("lowLatencyToggle");
+const $bufferWrap = document.getElementById("bufferWrap");
+const $bufferBar = document.getElementById("bufferBar");
+const $bufferDetail = document.getElementById("bufferDetail");
+
+// Listener-side prebuffer target: 10 s of audio before we let playback begin.
+// User accepts 10-30s behind-live latency; smoothness still prioritized but
+// natural rhythm matters more than aggressive catch-up.
+const PREBUFFER_S = 10;
+
+let mode = "http";  // "http" (default, smooth) | "webrtc" (low-latency)
+let pc = null;
+let peerId = null;
+let statsTimer = null;
+let pollTimer = null;
+let userIsScrubbing = false;
+let lastBehindS = 0;
+
+// HLS state
+let hls = null;
+let hlsPollTimer = null;
+
+function setStatus(msg, live=false) {
+  $mstate.textContent = msg;
+  document.title = (live ? "● " : "") + "Aspire Live";
+}
+
+// ── Helpers for Recent Slide Descriptions filter ───────────────────────────
+function isMeaningful(text) {
+  if (!text) return false;
+  if (text.length < 12) return false;
+  if (/^\s*Slide\s+\d+\.?\s*$/i.test(text)) return false;
+  return true;
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function renderCaptions(items) {
+  $caps.innerHTML = "";
+  const filtered = (items || []).filter(it => isMeaningful(it.text));
+  if (!filtered.length) {
+    $caps.innerHTML = '<li class="text-gray-500 italic">no descriptions yet…</li>';
+    return;
+  }
+  filtered.slice().reverse().forEach(it => {
+    const li = document.createElement("li");
+    li.className = "border-l-2 border-emerald-500 pl-3 text-sm";
+    const ago = Math.max(0, Math.round((Date.now()/1000) - it.t));
+    li.innerHTML = '<span class="text-gray-500">' + ago + 's ago</span> — ' + escapeHtml(it.text);
+    $caps.appendChild(li);
+  });
+}
+
+// ── HTTP / HLS playback (default) ─────────────────────────────────────────
+async function waitForPlaylist() {
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    try {
+      const r = await fetch("/audio/live.m3u8?t=" + Date.now(), {cache: "no-store"});
+      if (r.ok) return;
+    } catch (_) {}
+    await new Promise(r => setTimeout(r, 500));
+  }
+}
+
+function bufferedSeconds() {
+  try {
+    const tr = $audio.buffered;
+    if (!tr || tr.length === 0) return 0;
+    const ct = $audio.currentTime || 0;
+    let total = 0;
+    for (let i = 0; i < tr.length; i++) {
+      const start = Math.max(tr.start(i), ct);
+      const end = tr.end(i);
+      if (end > start) total += end - start;
+    }
+    return total;
+  } catch (_) { return 0; }
+}
+
+function showBuffering(show) {
+  if (show) {
+    $bufferWrap.classList.remove("hidden");
+    $bufferWrap.classList.add("flex");
+  } else {
+    $bufferWrap.classList.add("hidden");
+    $bufferWrap.classList.remove("flex");
+  }
+}
+
+async function waitForPrebuffer(label) {
+  showBuffering(true);
+  const deadline = Date.now() + 60000;  // 60s upper limit
+  while (Date.now() < deadline) {
+    const have = bufferedSeconds();
+    const pct = Math.min(100, Math.round((have / PREBUFFER_S) * 100));
+    $bufferBar.style.width = pct + "%";
+    $bufferDetail.textContent = have.toFixed(1) + " / " + PREBUFFER_S + "s";
+    setStatus(label + " — " + have.toFixed(1) + "s buffered");
+    // HAVE_FUTURE_DATA = 3, HAVE_ENOUGH_DATA = 4
+    const ready = $audio.readyState >= 3;
+    if (have >= PREBUFFER_S && ready) {
+      showBuffering(false);
+      return;
+    }
+    await new Promise(r => setTimeout(r, 250));
+  }
+  // Timed out — proceed anyway with whatever buffer we got
+  showBuffering(false);
+  console.warn("[buffer] prebuffer wait timed out, starting with " +
+               bufferedSeconds().toFixed(1) + "s");
+}
+
+async function startHttp() {
+  $btn.disabled = true;
+  setStatus("Starting pipeline…");
+  try { await fetch("/audio/start", { method: "POST" }); }
+  catch (e) { setStatus("Failed: " + e.message); $btn.disabled = false; return; }
+
+  setStatus("Waiting for first audio segment…");
+  await waitForPlaylist();
+
+  const url = "/audio/live.m3u8";
+
+  // Tell UI we're attaching but not yet playing
+  $startWrap.classList.add("hidden");
+  $transport.classList.remove("hidden");
+  $speakingWrap.classList.remove("hidden");
+
+  if ($audio.canPlayType("application/vnd.apple.mpegurl")) {
+    // Safari (iOS + macOS) — native HLS. We can't tune buffer depth as
+    // precisely as hls.js, but readyState + buffered ranges still work.
+    setStatus("Native HLS attaching…");
+    $audio.src = url;
+    // Force the browser to start filling its buffer without yet playing audio
+    try { $audio.load(); } catch (_) {}
+    await waitForPrebuffer("Buffering");
+    $audio.play().catch(() => setStatus("Tap the page to start audio."));
+    setStatus("Live", true);
+  } else if (window.Hls && Hls.isSupported()) {
+    // Chrome / Firefox / Android — hls.js
+    setStatus("hls.js attaching…");
+    if (hls) { try { hls.destroy(); } catch (_) {} }
+    hls = new Hls({
+      // Hold the playhead ~10 s behind live — less latency, still enough
+      // buffer for short network hiccups. Adaptive silence compression on
+      // the server side keeps the listener naturally tracking live.
+      liveSyncDuration: 10,
+      liveMaxLatencyDuration: 30,
+      maxBufferLength: 30,
+      maxMaxBufferLength: 60,
+      backBufferLength: 60,
+      lowLatencyMode: false,
+      liveDurationInfinity: true,
+      manifestLoadingRetryDelay: 500,
+      manifestLoadingMaxRetry: 12,
+      levelLoadingRetryDelay: 500,
+      levelLoadingMaxRetry: 12,
+      // Don't autoplay; we want to gate on prebuffer.
+      autoStartLoad: true,
+      startFragPrefetch: true,
+    });
+    hls.loadSource(url);
+    hls.attachMedia($audio);
+    hls.on(Hls.Events.MANIFEST_PARSED, async () => {
+      // Don't .play() yet — wait for ~10s buffered first.
+      await waitForPrebuffer("Buffering");
+      $audio.play().catch(() => setStatus("Tap the page to start audio."));
+      setStatus("Live", true);
+    });
+    hls.on(Hls.Events.ERROR, (_e, data) => {
+      if (data.fatal) {
+        setStatus("Reconnecting…");
+        setTimeout(() => { try { hls.startLoad(-1); } catch (_) {} }, 600);
+      }
+    });
+  } else {
+    setStatus("This browser cannot play HLS audio. Try Safari or Chrome.");
+    return;
+  }
+
+  startPollLoop();
+}
+
+// ── WebRTC playback (low-latency mode) ─────────────────────────────────────
+async function negotiateWebRTC() {
+  if (pc) { try { pc.close(); } catch (_) {} }
+  pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+  pc.addTransceiver("audio", { direction: "recvonly" });
+
+  pc.ontrack = (event) => {
+    $audio.srcObject = event.streams[0];
+    $audio.play().catch(() => setStatus("Tap the page to start audio."));
+  };
+  pc.onconnectionstatechange = () => {
+    setStatus("WebRTC: " + pc.connectionState, pc.connectionState === "connected");
+    if (pc.connectionState === "connected") startWebRTCStatsLoop();
+  };
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  const ans = await fetch("/webrtc/offer", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({sdp: pc.localDescription.sdp, type: pc.localDescription.type}),
+  });
+  if (!ans.ok) { setStatus("Server rejected (" + ans.status + ")"); return; }
+  const answer = await ans.json();
+  peerId = answer.peer_id;
+  await pc.setRemoteDescription(answer);
+}
+
+async function startWebRTC() {
+  $btn.disabled = true;
+  setStatus("Asking server to start the pipeline…");
+  try { await fetch("/webrtc/start", { method: "POST" }); }
+  catch (e) { setStatus("Failed: " + e.message); $btn.disabled = false; return; }
+  setStatus("Negotiating…");
+  await negotiateWebRTC();
+  $startWrap.classList.add("hidden");
+  $transport.classList.remove("hidden");
+  $speakingWrap.classList.remove("hidden");
+  startPollLoop();
+}
+
+function startWebRTCStatsLoop() {
+  if (statsTimer) clearInterval(statsTimer);
+  statsTimer = setInterval(async () => {
+    if (!pc) return;
+    const stats = await pc.getStats();
+    let jitter = null, rttMs = null;
+    stats.forEach(r => {
+      if (r.type === "inbound-rtp" && r.kind === "audio" && r.jitter !== undefined)
+        jitter = r.jitter * 1000;
+      if (r.type === "candidate-pair" && r.state === "succeeded" && r.currentRoundTripTime !== undefined)
+        rttMs = r.currentRoundTripTime * 1000;
+    });
+    const parts = [];
+    if (rttMs !== null) parts.push("rtt " + rttMs.toFixed(0) + "ms");
+    if (jitter !== null) parts.push("jitter " + jitter.toFixed(1) + "ms");
+    $lat.textContent = parts.length ? parts.join(" · ") : "—";
+  }, 1500);
+}
+
+// ── Status loop (always on) ────────────────────────────────────────────────
+async function startPollLoop() {
+  if (pollTimer) clearInterval(pollTimer);
+  const tick = async () => {
+    try {
+      const r = await fetch("/webrtc/status", {cache: "no-store"});
+      if (r.ok) {
+        const j = await r.json();
+        renderCaptions(j.recent_descriptions || []);
+        if (j.currently_speaking_text) {
+          $speaking.textContent = j.currently_speaking_text;
+          $speaking.classList.remove("opacity-50");
+          if (j.currently_speaking_ocr && j.currently_speaking_ocr.length > 0) {
+            $speakingOcr.textContent = "OCR: \"" + j.currently_speaking_ocr.slice(0, 200) + "\"";
+            $speakingOcr.classList.remove("hidden");
+          } else {
+            $speakingOcr.classList.add("hidden");
+          }
+        } else {
+          $speaking.textContent = "(silent — listening to speaker)";
+          $speaking.classList.add("opacity-50");
+          $speakingOcr.classList.add("hidden");
+        }
+        const va = j.ffmpeg_video_alive ? "✓" : "✗";
+        const aa = j.ffmpeg_audio_alive ? "✓" : "✗";
+        const candAge = (j.candidate_age_s || 0).toFixed(1);
+        let msg = "ffmpeg V:" + va + " A:" + aa
+          + " · video " + (j.video_fps || 0).toFixed(0) + "fps"
+          + " · " + (j.mixer_state || "—")
+          + " · cand " + candAge + "s"
+          + " · committed " + (j.candidates_committed || 0)
+          + " · dedup " + (j.dedup_skipped || 0)
+          + " · cpu " + (j.cpu_percent || 0).toFixed(0) + "%";
+        if (mode === "http") {
+          msg += " · segs " + (j.audio_segments_written || 0);
+        }
+        setStatus(msg);
+      }
+      // Buffered/behind-live indicator
+      if (mode === "http") {
+        let bufAheadS = 0, behindS = 0;
+        try {
+          if ($audio.buffered.length) {
+            const last = $audio.buffered.length - 1;
+            bufAheadS = $audio.buffered.end(last) - $audio.currentTime;
+            behindS = $audio.buffered.end(last) - $audio.currentTime;
+          }
+        } catch (_) {}
+        $lat.textContent = "buffered " + bufAheadS.toFixed(1) + "s · ~" + behindS.toFixed(0) + "s behind live";
+        $behindLabel.textContent = behindS < 1 ? "near live" : "−" + behindS.toFixed(0) + "s behind live";
+      } else if (peerId && !userIsScrubbing) {
+        const pr = await fetch("/webrtc/peer/" + peerId, {cache: "no-store"});
+        if (pr.ok) {
+          const pj = await pr.json();
+          lastBehindS = pj.behind_live_s || 0;
+          $scrub.value = String(Math.round(lastBehindS));
+          if (lastBehindS < 1) {
+            $behindLabel.textContent = "at live";
+          } else {
+            $behindLabel.textContent = "−" + lastBehindS.toFixed(1) + "s behind live";
+          }
+        }
+      }
+    } catch (_) {}
+  };
+  tick();
+  pollTimer = setInterval(tick, 1000);
+}
+
+// ── Scrub interaction ──────────────────────────────────────────────────────
+$scrub.addEventListener("input", () => {
+  userIsScrubbing = true;
+  const v = parseInt($scrub.value, 10) || 0;
+  $behindLabel.textContent = v < 1 ? "at live" : "−" + v + "s behind live";
+});
+$scrub.addEventListener("change", async () => {
+  const behindS = parseInt($scrub.value, 10) || 0;
+  if (mode === "webrtc") {
+    if (peerId) {
+      await fetch("/webrtc/seek", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({peer_id: peerId, behind_live_s: behindS}),
+      });
+    }
+  } else {
+    // HTTP/MSE: jump audio.currentTime back. Buffered range covers what we
+    // already have; for further-back positions we'd need to flush + re-prime.
+    try {
+      const buf = $audio.buffered;
+      if (buf.length) {
+        const liveEdge = buf.end(buf.length - 1);
+        const target = Math.max(buf.start(0), liveEdge - behindS);
+        $audio.currentTime = target;
+      }
+    } catch (_) {}
+  }
+  setTimeout(() => { userIsScrubbing = false; }, 800);
+});
+$liveBtn.addEventListener("click", async () => {
+  if (mode === "webrtc" && peerId) {
+    await fetch("/webrtc/live", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({peer_id: peerId}),
+    });
+  } else {
+    try {
+      const buf = $audio.buffered;
+      if (buf.length) $audio.currentTime = buf.end(buf.length - 1);
+    } catch (_) {}
+  }
+  $scrub.value = 0;
+});
+
+$playBtn.addEventListener("click", () => {
+  if ($audio.paused) { $audio.play().catch(()=>{}); $playBtn.textContent = "⏸︎ Pause"; }
+  else { $audio.pause(); $playBtn.textContent = "▶ Play"; }
+});
+$audio.addEventListener("playing", () => { $playBtn.textContent = "⏸︎ Pause"; });
+$audio.addEventListener("pause",  () => { $playBtn.textContent = "▶ Play"; });
+
+$btn.addEventListener("click", () => {
+  mode = $low.checked ? "webrtc" : "http";
+  if (mode === "http") startHttp();
+  else startWebRTC();
+});
+
+document.addEventListener("click", () => {
+  if ($audio.paused && !$audio.ended) $audio.play().catch(()=>{});
+}, true);
+
+// ── Mark stutter button ────────────────────────────────────────────────────
+// Posts to /diagnostics/mark with an ISO timestamp so the backend log gets
+// a [USER_MARK] line we can correlate with the surrounding diagnostic data.
+const $markBtn = document.getElementById("markStutterBtn");
+const $markToast = document.getElementById("markToast");
+let _markToastTimer = null;
+$markBtn.addEventListener("click", async () => {
+  const ts = new Date().toISOString();
+  $markBtn.disabled = true;
+  try {
+    await fetch("/diagnostics/mark", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({note: "stutter at " + ts}),
+    });
+    $markToast.textContent = "Marked " + ts.slice(11, 19);
+    $markToast.style.opacity = "1";
+  } catch (_) {
+    $markToast.textContent = "Mark failed — check connection";
+    $markToast.style.opacity = "1";
+  }
+  if (_markToastTimer) clearTimeout(_markToastTimer);
+  _markToastTimer = setTimeout(() => { $markToast.style.opacity = "0"; }, 1000);
+  setTimeout(() => { $markBtn.disabled = false; }, 250);
+});
+// Keyboard shortcut: 'M' to mark, since tapping on a phone screen mid-stutter
+// is the actual workflow but a Mac listener may want a hotkey too.
+document.addEventListener("keydown", (e) => {
+  if ((e.key === "m" || e.key === "M") && !e.metaKey && !e.ctrlKey
+      && !e.altKey && document.activeElement.tagName !== "INPUT") {
+    $markBtn.click();
+  }
+});
+</script>
+</body>
+</html>

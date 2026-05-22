@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RT Slide Audio</title>
+  <style>
+    :root { --border:#ddd; --pad:16px; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; }
+    .wrap { display: grid; grid-template-columns: 1fr 1fr; gap: var(--pad); padding: var(--pad); height: 100vh; box-sizing: border-box; }
+    .pane { border: 1px solid var(--border); border-radius: 12px; padding: var(--pad); overflow: auto; }
+    h2 { margin-top: 0; }
+    #progress { font-size: 14px; line-height: 1.5; white-space: pre-line; }
+    button { padding: 8px 14px; border-radius: 10px; border: 1px solid #ccc; background: #f7f7f7; cursor: pointer; }
+    .meta { font-size: 13px; color: #555; margin-top: 6px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="pane">
+      <h2>Upload Video</h2>
+      <input type="file" id="file" accept="video/*" />
+      <button id="uploadBtn">Upload & Start</button>
+      <div id="meta" class="meta"></div>
+      <h3>Progress</h3>
+      <div id="progress"></div>
+    </div>
+    <div class="pane">
+      <h2>Final Audio (near real‑time)</h2>
+      <audio id="player" controls></audio>
+      <div id="nowPlaying" class="meta"></div>
+    </div>
+  </div>
+
+  <script>
+    const uploadBtn = document.getElementById('uploadBtn');
+    const fileInput = document.getElementById('file');
+    const progressEl = document.getElementById('progress');
+    const metaEl = document.getElementById('meta');
+    const player = document.getElementById('player');
+    const nowPlaying = document.getElementById('nowPlaying');
+
+    let sessionId = null;
+    let numChunks = 0;
+    let current = 0;
+
+    function log(msg) { progressEl.textContent += msg + "\n"; }
+    function setNowPlaying(msg) { nowPlaying.textContent = msg || ""; }
+
+    uploadBtn.onclick = async () => {
+      const file = fileInput.files[0];
+      if (!file) { alert('Pick a video first'); return; }
+
+      const fd = new FormData();
+      fd.append('file', file);
+
+      progressEl.textContent = "";
+      setNowPlaying("");
+      log('Uploading...');
+
+      const res = await fetch('/upload', { method: 'POST', body: fd });
+      if (!res.ok) { log(`Upload failed (${res.status})`); return; }
+
+      const data = await res.json();
+      sessionId = data.session_id;
+      numChunks = data.num_chunks;
+      current = 0;
+      metaEl.textContent = `Session: ${sessionId}\nChunks: ${numChunks}`;
+
+      // Start playback of chunk 0
+      await playChunk(current);
+    };
+
+    async function waitUntilReady(idx) {
+      // Poll until server has the chunk (404 = not ready yet)
+      while (true) {
+        try {
+          const res = await fetch(`/audio/${sessionId}/${idx}?t=${Date.now()}`, { cache: 'no-store' });
+          if (res.ok) return res; // ready → return the audio response
+          if (res.status === 404) {
+            log(`Chunk ${idx} not ready yet...`);
+            await new Promise(r => setTimeout(r, 500));
+            continue;
+          }
+          // Unexpected error -> throw to stop loop
+          throw new Error(`HTTP ${res.status}`);
+        } catch (e) {
+          log(`Chunk ${idx} fetch error: ${e.message || e}`);
+          await new Promise(r => setTimeout(r, 700));
+        }
+      }
+    }
+
+    async function playChunk(idx) {
+      if (idx >= numChunks) { log('All chunks played.'); setNowPlaying(''); return; }
+
+      log(`Getting chunk ${idx}...`);
+      const res = await waitUntilReady(idx);
+      log(`Chunk ${idx} ready!`);
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      player.src = url;
+      setNowPlaying(`Playing chunk ${idx + 1} / ${numChunks}`);
+      try { await player.play(); } catch { /* autoplay might be blocked; user can click play */ }
+
+      // Proactively start the next chunk’s processing on the server
+      fetch(`/audio/${sessionId}/${idx+1}?poke=1`).catch(()=>{});
+
+      player.onended = () => {
+        URL.revokeObjectURL(url);
+        playChunk(idx + 1);
+      };
+    }
+  </script>
+</body>
+</html>

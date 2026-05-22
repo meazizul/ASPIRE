@@ -1,0 +1,55 @@
+# Secrets
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+.git-credentials
+
+# Python
+.venv/
+.venv.*/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# macOS
+.DS_Store
+._.DS_Store
+.AppleDouble
+.LSOverride
+
+# Logs and runtime
+*.log
+/logs/
+sessions/
+
+# Build artifacts (large, regenerable)
+tools/systemAudioDump/.build/
+tools/systemAudioDump/build/
+tools/systemAudioDump/SystemAudioDump
+
+# ML models (too large for git; README explains how to download)
+models/kokoro/kokoro-v1.0.onnx
+models/kokoro/voices-v1.0.bin
+
+# Test/diagnostic artifacts
+/tmp_outputs/
+*.pcm
+*.wav
+/tmp/aspire-*
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local-only — Claude Code workspace and internal session notes
+.claude/
+SESSION_STATE.md
+GUIDE.md
