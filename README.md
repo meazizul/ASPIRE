@@ -105,8 +105,8 @@ and Low-Vision Audiences Through Delay-Buffered Editing"* by Hakim & Hong
 
 ```bash
 # 1. Clone
-git clone https://github.com/meazizul/ASPIRE.git
-cd ASPIRE
+git clone https://github.com/InteractiveComputingLab/ASPIRE2.0.git
+cd ASPIRE2.0
 
 # 2. Python venv + dependencies
 python3 -m venv .venv
@@ -159,7 +159,7 @@ silences the listener.
 **Step 2.** *Terminal 1* — start the backend:
 
 ```bash
-cd ASPIRE
+cd ASPIRE2.0
 source .venv/bin/activate
 ASPIRE_AVFOUNDATION_INPUT=3:0 uvicorn app:app --host 0.0.0.0 --port 8000
 ```
