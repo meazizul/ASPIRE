@@ -3,536 +3,551 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Aspire Live</title>
+<title>Aspire — Live Accessibility Narration</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
 <style>
-  body { background:#0a0a0a; color:#eaeaea; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
-  .pulse { animation: pulse 2s ease-in-out infinite; }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+  :root { color-scheme: dark; }
+  body {
+    background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(16,185,129,.10), transparent 60%),
+      radial-gradient(900px 500px at 0% 0%, rgba(59,130,246,.08), transparent 55%),
+      #07090c;
+    color:#e6e9ef;
+    font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+  }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-variant-numeric:tabular-nums; }
+  .card { background:rgba(255,255,255,.025); border:1px solid rgba(255,255,255,.07); border-radius:14px; }
+  .pulse { animation:pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+  .pop { animation:pop .45s ease; }
+  @keyframes pop { 0%{transform:translateY(-6px);opacity:0} 100%{transform:translateY(0);opacity:1} }
+  /* Now-speaking equalizer */
+  .eq { display:inline-flex; align-items:flex-end; gap:3px; height:20px; }
+  .eq span { width:3px; height:30%; background:currentColor; border-radius:2px;
+             animation:eqbar 1.1s ease-in-out infinite; transform-origin:bottom; }
+  .eq span:nth-child(2){ animation-delay:.18s } .eq span:nth-child(3){ animation-delay:.36s }
+  .eq span:nth-child(4){ animation-delay:.10s } .eq span:nth-child(5){ animation-delay:.48s }
+  .eq span:nth-child(6){ animation-delay:.28s } .eq span:nth-child(7){ animation-delay:.40s }
+  .eq.calm span { animation-duration:2.4s; }       /* gentle while just listening */
+  @keyframes eqbar { 0%,100%{height:22%} 50%{height:100%} }
+  /* live "on-air" red dot */
+  .onair { box-shadow:0 0 0 0 rgba(239,68,68,.55); animation:onair 1.6s ease-out infinite; }
+  @keyframes onair { 0%{box-shadow:0 0 0 0 rgba(239,68,68,.55)} 70%{box-shadow:0 0 0 7px rgba(239,68,68,0)} 100%{box-shadow:0 0 0 0 rgba(239,68,68,0)} }
+  .log-scroll { scrollbar-width:thin; scrollbar-color:#334155 transparent; }
+  .log-scroll::-webkit-scrollbar { width:8px; }
+  .log-scroll::-webkit-scrollbar-thumb { background:#334155; border-radius:4px; }
   input[type=range].scrub {
-    -webkit-appearance: none; appearance: none;
-    width: 100%; height: 6px; background: #1f2937; border-radius: 3px; outline: none;
+    -webkit-appearance:none; appearance:none; width:100%; height:6px;
+    background:#1f2937; border-radius:3px; outline:none;
   }
   input[type=range].scrub::-webkit-slider-thumb {
-    -webkit-appearance: none; appearance: none;
-    width: 16px; height: 16px; border-radius: 50%;
-    background: #10b981; cursor: pointer; border: 2px solid #064e3b;
+    -webkit-appearance:none; appearance:none; width:16px; height:16px;
+    border-radius:50%; background:#10b981; cursor:pointer; border:2px solid #064e3b;
   }
   input[type=range].scrub::-moz-range-thumb {
-    width: 16px; height: 16px; border-radius: 50%;
-    background: #10b981; cursor: pointer; border: 2px solid #064e3b;
+    width:16px; height:16px; border-radius:50%; background:#10b981; cursor:pointer; border:2px solid #064e3b;
   }
+  kbd { font-family:ui-monospace,Menlo,monospace; font-size:.72rem; background:#11161d;
+        border:1px solid #2a323d; border-bottom-width:2px; border-radius:6px; padding:2px 7px; color:#cbd5e1; }
 </style>
 </head>
-<body class="min-h-screen flex flex-col items-center p-6">
+<body class="min-h-screen">
 
-<div class="w-full max-w-2xl">
-
-  <h1 class="text-3xl font-semibold mb-1 text-center">Aspire Live</h1>
-  <div id="latency" class="text-sm text-gray-400 mb-1 text-center">—</div>
-  <div id="mstate" class="text-xs text-gray-500 mb-2 text-center">—</div>
-
-  <div class="text-center mb-4">
-    <label class="inline-flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none">
-      <input id="lowLatencyToggle" type="checkbox" class="accent-emerald-500">
-      Low-latency mode (WebRTC, may stutter)
-    </label>
+<!-- ══ Top bar ══ -->
+<header class="sticky top-0 z-20 backdrop-blur bg-[#07090c]/80 border-b border-white/5">
+  <div class="max-w-6xl mx-auto px-5 py-3 flex items-center gap-3">
+    <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-400 to-teal-600 flex items-center justify-center font-bold text-black">A</div>
+    <div class="leading-tight">
+      <div class="font-semibold tracking-tight">Aspire</div>
+      <div class="text-[11px] text-gray-400 -mt-0.5">Live Accessibility Narration</div>
+    </div>
+    <div class="ml-auto flex items-center gap-4">
+      <div class="hidden sm:flex items-center gap-1.5 text-xs text-gray-400">
+        <span class="mono" id="hdrListeners">0</span> listening
+      </div>
+      <div id="livePill" class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 text-xs">
+        <span id="liveDot" class="inline-block w-2 h-2 rounded-full bg-gray-500"></span>
+        <span id="liveText" class="font-medium text-gray-300">Idle</span>
+      </div>
+    </div>
   </div>
+</header>
 
-  <audio id="player" preload="auto" playsinline class="hidden"></audio>
+<main class="max-w-6xl mx-auto px-5 py-6">
 
-  <div id="startWrap" class="flex justify-center">
+  <!-- ══ Start overlay (pre-listen) ══ -->
+  <section id="startWrap" class="card p-10 flex flex-col items-center text-center my-10">
+    <div class="text-2xl font-semibold mb-2">Ready to listen</div>
+    <p class="text-gray-400 max-w-md mb-6 text-sm leading-relaxed">
+      Live spoken descriptions of the presenter's slides, mixed into the talk audio.
+      Audio is held a few seconds behind live for smooth, gap-free playback.
+    </p>
     <button id="startBtn"
-            class="bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 text-black font-semibold rounded-lg px-10 py-5 text-lg min-w-[12rem] focus:outline-none focus:ring-4 focus:ring-emerald-300">
+            class="bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 text-black font-semibold rounded-xl px-10 py-5 text-lg min-w-[14rem] focus:outline-none focus:ring-4 focus:ring-emerald-300/40">
       Start listening
     </button>
-  </div>
+    <div class="mt-5 text-sm text-gray-400">
+      or press <kbd>Ctrl</kbd> + <kbd>P</kbd> &nbsp;<span class="text-gray-600">(works without looking at the screen)</span>
+    </div>
+    <label class="mt-6 inline-flex items-center gap-2 text-xs text-gray-500 cursor-pointer select-none">
+      <input id="lowLatencyToggle" type="checkbox" class="accent-emerald-500">
+      Low-latency mode (WebRTC, experimental)
+    </label>
+  </section>
 
-  <div id="bufferWrap" class="hidden flex flex-col items-center mt-4">
+  <!-- ══ Buffering ══ -->
+  <section id="bufferWrap" class="hidden card p-8 flex-col items-center text-center my-10">
     <div class="flex items-center gap-3 mb-2">
       <span class="inline-block w-3 h-3 rounded-full bg-amber-400 pulse"></span>
-      <span class="text-amber-300 font-medium">Buffering — please wait ~10 seconds…</span>
+      <span class="text-amber-300 font-medium">Buffering — please wait…</span>
     </div>
-    <div class="text-xs text-gray-500">Holding audio ~30–60s behind live for smoothness.</div>
-    <div class="mt-3 w-64 h-2 bg-gray-800 rounded-full overflow-hidden">
+    <div class="text-xs text-gray-500">Pre-loading audio for smooth playback.</div>
+    <div class="mt-4 w-72 h-2 bg-white/10 rounded-full overflow-hidden">
       <div id="bufferBar" class="h-full bg-amber-400 transition-all" style="width:0%"></div>
     </div>
-    <div id="bufferDetail" class="text-xs text-gray-500 mt-1">0 / 10s</div>
-  </div>
+    <div id="bufferDetail" class="text-xs text-gray-500 mt-2 mono">0 / 5s</div>
+  </section>
 
-  <div id="transport" class="hidden mt-2">
-    <div class="flex items-center gap-3 mb-2">
-      <button id="playBtn" class="bg-gray-800 hover:bg-gray-700 text-white rounded-md px-3 py-2 text-sm">⏸︎ Pause</button>
-      <button id="liveBtn" class="text-xs uppercase tracking-wider px-3 py-2 rounded-md bg-red-600 hover:bg-red-500 text-white">● LIVE</button>
-      <div id="behindLabel" class="text-xs text-gray-400 ml-auto">at live</div>
+  <!-- ══ Dashboard (post-start) ══ -->
+  <div id="dash" class="hidden grid grid-cols-1 lg:grid-cols-3 gap-5">
+
+    <!-- Left: now speaking + transport + slide log -->
+    <div class="lg:col-span-2 space-y-5">
+
+      <!-- Now speaking -->
+      <section class="card p-5">
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-3">
+            <div id="eq" class="eq calm text-gray-600" aria-hidden="true">
+              <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+            </div>
+            <div class="text-[11px] uppercase tracking-wider text-emerald-400 font-semibold">Now speaking</div>
+            <span id="nsState" class="text-[10px] px-2 py-0.5 rounded-full bg-white/5 text-gray-400">listening</span>
+          </div>
+          <div id="speakingBadge" class="hidden text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 mono">slide —</div>
+        </div>
+        <div id="speaking" class="text-lg leading-relaxed text-emerald-50 min-h-[2.5rem]" aria-live="off">—</div>
+        <div id="speakingOcr" class="hidden text-xs text-gray-500 italic mt-2"></div>
+      </section>
+
+      <!-- Transport -->
+      <section id="transport" class="hidden card p-4">
+        <div class="flex items-center gap-3 mb-3">
+          <button id="playBtn" class="bg-white/10 hover:bg-white/15 text-white rounded-lg px-4 py-2 text-sm font-medium">⏸︎ Pause</button>
+          <button id="liveBtn" class="text-xs uppercase tracking-wider px-3 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white font-semibold">● LIVE</button>
+          <div id="behindLabel" class="text-xs text-gray-400 ml-auto mono">at live</div>
+        </div>
+        <input id="scrub" class="scrub" type="range" min="0" max="120" step="1" value="0"
+               aria-label="Scrub backward in time" />
+        <div class="flex justify-between text-[11px] text-gray-500 mt-1.5">
+          <span id="oldestLabel">−120s</span>
+          <span class="text-gray-600">drag back to replay</span>
+          <span>now</span>
+        </div>
+      </section>
+
+      <!-- Slide description log -->
+      <section class="card p-5">
+        <div class="flex items-center justify-between mb-3">
+          <div class="text-[11px] uppercase tracking-wider text-gray-400 font-semibold">Slide description log</div>
+          <div class="text-[11px] text-gray-500"><span id="logCount" class="mono text-gray-300">0</span> described</div>
+        </div>
+        <ul id="captions" class="space-y-2 max-h-[22rem] overflow-y-auto log-scroll pr-1"></ul>
+      </section>
     </div>
-    <input id="scrub" class="scrub" type="range" min="0" max="120" step="1" value="0"
-           aria-label="Scrub backward — drag right to go further back in time" />
-    <div class="flex justify-between text-xs text-gray-500 mt-1">
-      <span id="oldestLabel">−120s</span>
-      <span class="text-gray-400">drag back to replay · cannot scrub forward of live</span>
-      <span>now</span>
+
+    <!-- Right: live metrics -->
+    <div class="space-y-5">
+
+      <!-- Pipeline health -->
+      <section class="card p-5">
+        <div class="text-[11px] uppercase tracking-wider text-gray-400 font-semibold mb-3">Pipeline</div>
+        <div class="space-y-2.5 text-sm">
+          <div class="flex items-center justify-between">
+            <span class="text-gray-400">Screen capture</span>
+            <span id="hVideo" class="mono text-gray-300">—</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="text-gray-400">Audio capture</span>
+            <span id="hAudio" class="mono text-gray-300">—</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="text-gray-400">Mixer state</span>
+            <span id="hMixer" class="mono text-gray-300">—</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="text-gray-400">Time-reclaim</span>
+            <span id="hReclaim" class="mono text-gray-300">—</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="text-gray-400">Slide region</span>
+            <span id="hRoi" class="mono text-gray-300">—</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="text-gray-400">Behind live</span>
+            <span id="hBehind" class="mono text-emerald-300">—</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Metric tiles -->
+      <section class="grid grid-cols-2 gap-3">
+        <div class="card p-4">
+          <div class="text-[10px] uppercase tracking-wider text-gray-500">Slides described</div>
+          <div id="mSlides" class="mono text-2xl font-semibold mt-1">0</div>
+        </div>
+        <div class="card p-4">
+          <div class="text-[10px] uppercase tracking-wider text-gray-500">Duplicates skipped</div>
+          <div id="mDups" class="mono text-2xl font-semibold mt-1 text-amber-300">0</div>
+        </div>
+        <div class="card p-4">
+          <div class="text-[10px] uppercase tracking-wider text-gray-500">Silence reclaimed</div>
+          <div id="mSilence" class="mono text-2xl font-semibold mt-1 text-sky-300">0s</div>
+        </div>
+        <div class="card p-4">
+          <div class="text-[10px] uppercase tracking-wider text-gray-500">Fillers removed</div>
+          <div id="mFillers" class="mono text-2xl font-semibold mt-1 text-sky-300">0</div>
+          <div id="mFillersSec" class="text-[10px] text-gray-500 mono mt-0.5">≈0s</div>
+        </div>
+      </section>
+
+      <!-- System -->
+      <section class="card p-5">
+        <div class="text-[11px] uppercase tracking-wider text-gray-400 font-semibold mb-3">System</div>
+        <div class="space-y-2.5 text-sm">
+          <div class="flex items-center justify-between"><span class="text-gray-400">Video / Audio fps</span><span id="sFps" class="mono text-gray-300">—</span></div>
+          <div class="flex items-center justify-between"><span class="text-gray-400">Haiku calls</span><span id="sHaiku" class="mono text-gray-300">0</span></div>
+          <div class="flex items-center justify-between"><span class="text-gray-400">TTS played</span><span id="sTts" class="mono text-gray-300">0</span></div>
+          <div class="flex items-center justify-between"><span class="text-gray-400">HLS segments</span><span id="sSegs" class="mono text-gray-300">0</span></div>
+          <div class="flex items-center justify-between"><span class="text-gray-400">CPU / Mem</span><span id="sCpu" class="mono text-gray-300">—</span></div>
+        </div>
+      </section>
     </div>
   </div>
 
-  <div id="speakingWrap" class="mt-8 hidden">
-    <div class="text-xs uppercase tracking-wider text-emerald-400 mb-2">Now speaking</div>
-    <div class="border-l-4 border-emerald-500 bg-emerald-950/30 pl-4 py-3 rounded-r">
-      <div id="speakingOcr" class="text-xs text-gray-400 italic mb-1 hidden"></div>
-      <div id="speaking" class="text-emerald-100"></div>
-    </div>
+  <!-- keyboard hints (post-start) -->
+  <div id="hints" class="hidden mt-6 text-center text-[11px] text-gray-600">
+    <kbd>Space</kbd> play / pause &nbsp;·&nbsp; <kbd>L</kbd> jump to live
   </div>
+</main>
 
-  <div class="mt-8">
-    <div class="text-xs uppercase tracking-wider text-gray-400 mb-2">Recent slide descriptions</div>
-    <ul id="captions" class="space-y-2 text-gray-200"></ul>
-  </div>
-
-  <p class="mt-8 text-xs text-gray-500 text-center">
-    Default mode buffers ~10–30 seconds for smooth playback.
-    Slide descriptions arrive when the speaker pauses.
-  </p>
-
-  <div class="mt-6 mb-4 flex flex-col items-center">
-    <button id="markStutterBtn"
-            class="bg-red-600 hover:bg-red-500 active:bg-red-700 text-white rounded-md px-5 py-3 text-sm font-medium min-w-[10rem]"
-            aria-label="Mark a stutter at the current moment">
-      Mark stutter
-    </button>
-    <div id="markToast"
-         class="mt-2 text-xs text-emerald-400 opacity-0 transition-opacity"
-         role="status" aria-live="polite">
-      Marked
-    </div>
-  </div>
-
-</div>
+<audio id="player" preload="auto" playsinline class="hidden"></audio>
+<div id="sr" class="sr-only" aria-live="assertive" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)"></div>
 
 <script>
-const $btn = document.getElementById("startBtn");
-const $startWrap = document.getElementById("startWrap");
-const $transport = document.getElementById("transport");
-const $playBtn = document.getElementById("playBtn");
-const $liveBtn = document.getElementById("liveBtn");
-const $scrub = document.getElementById("scrub");
-const $oldestLabel = document.getElementById("oldestLabel");
-const $behindLabel = document.getElementById("behindLabel");
-const $speakingWrap = document.getElementById("speakingWrap");
-const $speaking = document.getElementById("speaking");
-const $speakingOcr = document.getElementById("speakingOcr");
-const $audio = document.getElementById("player");
-const $caps = document.getElementById("captions");
-const $lat = document.getElementById("latency");
-const $mstate = document.getElementById("mstate");
-const $low = document.getElementById("lowLatencyToggle");
-const $bufferWrap = document.getElementById("bufferWrap");
-const $bufferBar = document.getElementById("bufferBar");
-const $bufferDetail = document.getElementById("bufferDetail");
+const $ = (id) => document.getElementById(id);
+const $btn=$("startBtn"), $startWrap=$("startWrap"), $dash=$("dash"), $hints=$("hints");
+const $transport=$("transport"), $playBtn=$("playBtn"), $liveBtn=$("liveBtn");
+const $scrub=$("scrub"), $oldestLabel=$("oldestLabel"), $behindLabel=$("behindLabel");
+const $speaking=$("speaking"), $speakingOcr=$("speakingOcr"), $speakingBadge=$("speakingBadge");
+const $audio=$("player"), $caps=$("captions"), $logCount=$("logCount");
+const $low=$("lowLatencyToggle");
+const $bufferWrap=$("bufferWrap"), $bufferBar=$("bufferBar"), $bufferDetail=$("bufferDetail");
+const $liveDot=$("liveDot"), $liveText=$("liveText"), $hdrListeners=$("hdrListeners"), $sr=$("sr");
+const $eq=$("eq"), $nsState=$("nsState");
 
-// Listener-side prebuffer target: 10 s of audio before we let playback begin.
-// User accepts 10-30s behind-live latency; smoothness still prioritized but
-// natural rhythm matters more than aggressive catch-up.
-const PREBUFFER_S = 10;
+const PREBUFFER_S = 5;
 
-let mode = "http";  // "http" (default, smooth) | "webrtc" (low-latency)
-let pc = null;
-let peerId = null;
-let statsTimer = null;
-let pollTimer = null;
-let userIsScrubbing = false;
-let lastBehindS = 0;
+let mode = "http";
+let pc=null, peerId=null, statsTimer=null, pollTimer=null;
+let userIsScrubbing=false, lastBehindS=0, started=false;
+let hls=null;
 
-// HLS state
-let hls = null;
-let hlsPollTimer = null;
+// Cumulative slide log (client-side, dedup by text) so the demo shows the
+// full history, not just the server's last-5 window.
+const slideLog = [];           // {n, body, t}
+const seenText = new Set();
 
-function setStatus(msg, live=false) {
-  $mstate.textContent = msg;
-  document.title = (live ? "● " : "") + "Aspire Live";
+function announce(msg){ $sr.textContent = msg; }
+function setLive(state){
+  // state: 'idle' | 'starting' | 'buffering' | 'live' | 'paused' | 'reconnecting'
+  const map = {
+    idle:      ["bg-gray-500","Idle","text-gray-300"],
+    starting:  ["bg-amber-400 pulse","Starting…","text-amber-300"],
+    buffering: ["bg-amber-400 pulse","Buffering…","text-amber-300"],
+    live:      ["bg-red-500 onair","● LIVE","text-red-400"],
+    paused:    ["bg-gray-400","Paused","text-gray-300"],
+    reconnecting:["bg-amber-400 pulse","Reconnecting…","text-amber-300"],
+  };
+  const [dot,txt,cls] = map[state] || map.idle;
+  $liveDot.className = "inline-block w-2 h-2 rounded-full " + dot;
+  $liveText.className = "font-medium " + cls;
+  $liveText.textContent = txt;
+  document.title = (state==="live"?"● ":"") + "Aspire — Live Narration";
 }
 
-// ── Helpers for Recent Slide Descriptions filter ───────────────────────────
-function isMeaningful(text) {
-  if (!text) return false;
-  if (text.length < 12) return false;
-  if (/^\s*Slide\s+\d+\.?\s*$/i.test(text)) return false;
-  return true;
+function escapeHtml(s){ return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function isMeaningful(t){ return t && t.length>=12 && !/^\s*Slide\s+\d+\.?\s*$/i.test(t); }
+
+function parseSlide(text){
+  const m = text.match(/^\s*slide\s+(\d+)[.:]?\s*/i);
+  return { n: m ? parseInt(m[1],10) : null, body: m ? text.slice(m[0].length) : text };
 }
 
-function escapeHtml(s) {
-  return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+function ingestDescriptions(items){
+  (items||[]).forEach(it => {
+    if (!isMeaningful(it.text)) return;
+    if (seenText.has(it.text)) return;
+    seenText.add(it.text);
+    const p = parseSlide(it.text);
+    slideLog.push({ n:p.n, body:p.body, t: it.t });
+  });
+  renderLog();
 }
 
-function renderCaptions(items) {
-  $caps.innerHTML = "";
-  const filtered = (items || []).filter(it => isMeaningful(it.text));
-  if (!filtered.length) {
-    $caps.innerHTML = '<li class="text-gray-500 italic">no descriptions yet…</li>';
+function renderLog(){
+  $logCount.textContent = String(slideLog.length);
+  if (!slideLog.length){
+    $caps.innerHTML = '<li class="text-gray-600 italic text-sm">no slide descriptions yet…</li>';
     return;
   }
-  filtered.slice().reverse().forEach(it => {
-    const li = document.createElement("li");
-    li.className = "border-l-2 border-emerald-500 pl-3 text-sm";
+  $caps.innerHTML = "";
+  slideLog.slice().reverse().forEach((it, idx) => {
     const ago = Math.max(0, Math.round((Date.now()/1000) - it.t));
-    li.innerHTML = '<span class="text-gray-500">' + ago + 's ago</span> — ' + escapeHtml(it.text);
+    const li = document.createElement("li");
+    li.className = "flex gap-3 items-start" + (idx===0 ? " pop" : "");
+    li.innerHTML =
+      '<span class="shrink-0 mono text-[11px] px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 mt-0.5">'
+        + (it.n!=null ? ("#"+it.n) : "•") + '</span>'
+      + '<div class="min-w-0">'
+        + '<div class="text-sm text-gray-200 leading-snug">' + escapeHtml(it.body) + '</div>'
+        + '<div class="text-[11px] text-gray-600 mt-0.5 mono">' + ago + 's ago</div>'
+      + '</div>';
     $caps.appendChild(li);
   });
 }
 
-// ── HTTP / HLS playback (default) ─────────────────────────────────────────
-async function waitForPlaylist() {
-  const deadline = Date.now() + 30000;
-  while (Date.now() < deadline) {
-    try {
-      const r = await fetch("/audio/live.m3u8?t=" + Date.now(), {cache: "no-store"});
-      if (r.ok) return;
-    } catch (_) {}
-    await new Promise(r => setTimeout(r, 500));
+// ── HTTP / HLS playback ────────────────────────────────────────────────────
+async function waitForPlaylist(){
+  const deadline = Date.now()+30000;
+  while (Date.now()<deadline){
+    try { const r = await fetch("/audio/live.m3u8?t="+Date.now(),{cache:"no-store"}); if (r.ok) return; } catch(_){}
+    await new Promise(r=>setTimeout(r,500));
   }
 }
-
-function bufferedSeconds() {
-  try {
-    const tr = $audio.buffered;
-    if (!tr || tr.length === 0) return 0;
-    const ct = $audio.currentTime || 0;
-    let total = 0;
-    for (let i = 0; i < tr.length; i++) {
-      const start = Math.max(tr.start(i), ct);
-      const end = tr.end(i);
-      if (end > start) total += end - start;
-    }
+function bufferedSeconds(){
+  try{
+    const tr=$audio.buffered; if(!tr||!tr.length) return 0;
+    const ct=$audio.currentTime||0; let total=0;
+    for(let i=0;i<tr.length;i++){ const s=Math.max(tr.start(i),ct), e=tr.end(i); if(e>s) total+=e-s; }
     return total;
-  } catch (_) { return 0; }
+  }catch(_){ return 0; }
 }
-
-function showBuffering(show) {
-  if (show) {
-    $bufferWrap.classList.remove("hidden");
-    $bufferWrap.classList.add("flex");
-  } else {
-    $bufferWrap.classList.add("hidden");
-    $bufferWrap.classList.remove("flex");
-  }
-}
-
-async function waitForPrebuffer(label) {
-  showBuffering(true);
-  const deadline = Date.now() + 60000;  // 60s upper limit
-  while (Date.now() < deadline) {
+function showBuffering(show){ $bufferWrap.classList.toggle("hidden",!show); $bufferWrap.classList.toggle("flex",show); }
+async function waitForPrebuffer(){
+  showBuffering(true); setLive("buffering"); announce("Buffering");
+  const deadline = Date.now()+60000;
+  while (Date.now()<deadline){
     const have = bufferedSeconds();
-    const pct = Math.min(100, Math.round((have / PREBUFFER_S) * 100));
-    $bufferBar.style.width = pct + "%";
-    $bufferDetail.textContent = have.toFixed(1) + " / " + PREBUFFER_S + "s";
-    setStatus(label + " — " + have.toFixed(1) + "s buffered");
-    // HAVE_FUTURE_DATA = 3, HAVE_ENOUGH_DATA = 4
-    const ready = $audio.readyState >= 3;
-    if (have >= PREBUFFER_S && ready) {
-      showBuffering(false);
-      return;
-    }
-    await new Promise(r => setTimeout(r, 250));
+    $bufferBar.style.width = Math.min(100, Math.round(have/PREBUFFER_S*100)) + "%";
+    $bufferDetail.textContent = have.toFixed(1)+" / "+PREBUFFER_S+"s";
+    if (have>=PREBUFFER_S && $audio.readyState>=3){ showBuffering(false); return; }
+    await new Promise(r=>setTimeout(r,250));
   }
-  // Timed out — proceed anyway with whatever buffer we got
   showBuffering(false);
-  console.warn("[buffer] prebuffer wait timed out, starting with " +
-               bufferedSeconds().toFixed(1) + "s");
 }
 
-async function startHttp() {
-  $btn.disabled = true;
-  setStatus("Starting pipeline…");
-  try { await fetch("/audio/start", { method: "POST" }); }
-  catch (e) { setStatus("Failed: " + e.message); $btn.disabled = false; return; }
-
-  setStatus("Waiting for first audio segment…");
-  await waitForPlaylist();
-
-  const url = "/audio/live.m3u8";
-
-  // Tell UI we're attaching but not yet playing
+function revealDashboard(){
   $startWrap.classList.add("hidden");
+  $dash.classList.remove("hidden");
   $transport.classList.remove("hidden");
-  $speakingWrap.classList.remove("hidden");
+  $hints.classList.remove("hidden");
+}
 
-  if ($audio.canPlayType("application/vnd.apple.mpegurl")) {
-    // Safari (iOS + macOS) — native HLS. We can't tune buffer depth as
-    // precisely as hls.js, but readyState + buffered ranges still work.
-    setStatus("Native HLS attaching…");
-    $audio.src = url;
-    // Force the browser to start filling its buffer without yet playing audio
-    try { $audio.load(); } catch (_) {}
-    await waitForPrebuffer("Buffering");
-    $audio.play().catch(() => setStatus("Tap the page to start audio."));
-    setStatus("Live", true);
-  } else if (window.Hls && Hls.isSupported()) {
-    // Chrome / Firefox / Android — hls.js
-    setStatus("hls.js attaching…");
-    if (hls) { try { hls.destroy(); } catch (_) {} }
+async function startHttp(){
+  $btn.disabled=true; setLive("starting"); announce("Starting");
+  try { await fetch("/audio/start",{method:"POST"}); }
+  catch(e){ setLive("idle"); $btn.disabled=false; return; }
+  await waitForPlaylist();
+  const url="/audio/live.m3u8";
+  revealDashboard();
+
+  if ($audio.canPlayType("application/vnd.apple.mpegurl")){
+    $audio.src=url; try{ $audio.load(); }catch(_){}
+    await waitForPrebuffer();
+    $audio.play().catch(()=>{});
+    setLive("live"); announce("Live");
+  } else if (window.Hls && Hls.isSupported()){
+    if (hls){ try{ hls.destroy(); }catch(_){ } }
     hls = new Hls({
-      // Hold the playhead ~10 s behind live — less latency, still enough
-      // buffer for short network hiccups. Adaptive silence compression on
-      // the server side keeps the listener naturally tracking live.
-      liveSyncDuration: 10,
-      liveMaxLatencyDuration: 30,
-      maxBufferLength: 30,
-      maxMaxBufferLength: 60,
-      backBufferLength: 60,
-      lowLatencyMode: false,
-      liveDurationInfinity: true,
-      manifestLoadingRetryDelay: 500,
-      manifestLoadingMaxRetry: 12,
-      levelLoadingRetryDelay: 500,
-      levelLoadingMaxRetry: 12,
-      // Don't autoplay; we want to gate on prebuffer.
-      autoStartLoad: true,
-      startFragPrefetch: true,
+      liveSyncDuration:6, liveMaxLatencyDuration:15, maxBufferLength:30,
+      maxMaxBufferLength:60, backBufferLength:60, lowLatencyMode:false,
+      liveDurationInfinity:true, manifestLoadingRetryDelay:500, manifestLoadingMaxRetry:12,
+      levelLoadingRetryDelay:500, levelLoadingMaxRetry:12, autoStartLoad:true, startFragPrefetch:true,
     });
-    hls.loadSource(url);
-    hls.attachMedia($audio);
+    hls.loadSource(url); hls.attachMedia($audio);
     hls.on(Hls.Events.MANIFEST_PARSED, async () => {
-      // Don't .play() yet — wait for ~10s buffered first.
-      await waitForPrebuffer("Buffering");
-      $audio.play().catch(() => setStatus("Tap the page to start audio."));
-      setStatus("Live", true);
+      await waitForPrebuffer();
+      $audio.play().catch(()=>{});
+      setLive("live"); announce("Live");
     });
-    hls.on(Hls.Events.ERROR, (_e, data) => {
-      if (data.fatal) {
-        setStatus("Reconnecting…");
-        setTimeout(() => { try { hls.startLoad(-1); } catch (_) {} }, 600);
-      }
-    });
+    hls.on(Hls.Events.ERROR, (_e,data)=>{ if(data.fatal){ setLive("reconnecting"); setTimeout(()=>{ try{hls.startLoad(-1);}catch(_){}},600);} });
   } else {
-    setStatus("This browser cannot play HLS audio. Try Safari or Chrome.");
+    announce("This browser cannot play the audio. Try Safari or Chrome.");
     return;
   }
-
   startPollLoop();
 }
 
-// ── WebRTC playback (low-latency mode) ─────────────────────────────────────
-async function negotiateWebRTC() {
-  if (pc) { try { pc.close(); } catch (_) {} }
-  pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
-  pc.addTransceiver("audio", { direction: "recvonly" });
-
-  pc.ontrack = (event) => {
-    $audio.srcObject = event.streams[0];
-    $audio.play().catch(() => setStatus("Tap the page to start audio."));
+// ── WebRTC playback ─────────────────────────────────────────────────────────
+async function negotiateWebRTC(){
+  if (pc){ try{ pc.close(); }catch(_){ } }
+  pc = new RTCPeerConnection({ iceServers:[{urls:"stun:stun.l.google.com:19302"}] });
+  pc.addTransceiver("audio",{direction:"recvonly"});
+  pc.ontrack = (ev)=>{ $audio.srcObject=ev.streams[0]; $audio.play().catch(()=>{}); };
+  pc.onconnectionstatechange = ()=>{
+    if (pc.connectionState==="connected"){ setLive("live"); announce("Live"); }
+    else if (pc.connectionState==="connecting"){ setLive("starting"); }
+    else if (["failed","disconnected"].includes(pc.connectionState)){ setLive("reconnecting"); }
   };
-  pc.onconnectionstatechange = () => {
-    setStatus("WebRTC: " + pc.connectionState, pc.connectionState === "connected");
-    if (pc.connectionState === "connected") startWebRTCStatsLoop();
-  };
-
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  const ans = await fetch("/webrtc/offer", {
-    method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({sdp: pc.localDescription.sdp, type: pc.localDescription.type}),
-  });
-  if (!ans.ok) { setStatus("Server rejected (" + ans.status + ")"); return; }
-  const answer = await ans.json();
-  peerId = answer.peer_id;
-  await pc.setRemoteDescription(answer);
+  const offer = await pc.createOffer(); await pc.setLocalDescription(offer);
+  const ans = await fetch("/webrtc/offer",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({sdp:pc.localDescription.sdp,type:pc.localDescription.type})});
+  if (!ans.ok){ setLive("idle"); return; }
+  const a = await ans.json(); peerId=a.peer_id; await pc.setRemoteDescription(a);
 }
-
-async function startWebRTC() {
-  $btn.disabled = true;
-  setStatus("Asking server to start the pipeline…");
-  try { await fetch("/webrtc/start", { method: "POST" }); }
-  catch (e) { setStatus("Failed: " + e.message); $btn.disabled = false; return; }
-  setStatus("Negotiating…");
+async function startWebRTC(){
+  $btn.disabled=true; setLive("starting"); announce("Starting");
+  try { await fetch("/webrtc/start",{method:"POST"}); }
+  catch(e){ setLive("idle"); $btn.disabled=false; return; }
   await negotiateWebRTC();
-  $startWrap.classList.add("hidden");
-  $transport.classList.remove("hidden");
-  $speakingWrap.classList.remove("hidden");
+  revealDashboard();
   startPollLoop();
 }
 
-function startWebRTCStatsLoop() {
-  if (statsTimer) clearInterval(statsTimer);
-  statsTimer = setInterval(async () => {
-    if (!pc) return;
-    const stats = await pc.getStats();
-    let jitter = null, rttMs = null;
-    stats.forEach(r => {
-      if (r.type === "inbound-rtp" && r.kind === "audio" && r.jitter !== undefined)
-        jitter = r.jitter * 1000;
-      if (r.type === "candidate-pair" && r.state === "succeeded" && r.currentRoundTripTime !== undefined)
-        rttMs = r.currentRoundTripTime * 1000;
-    });
-    const parts = [];
-    if (rttMs !== null) parts.push("rtt " + rttMs.toFixed(0) + "ms");
-    if (jitter !== null) parts.push("jitter " + jitter.toFixed(1) + "ms");
-    $lat.textContent = parts.length ? parts.join(" · ") : "—";
-  }, 1500);
-}
-
-// ── Status loop (always on) ────────────────────────────────────────────────
-async function startPollLoop() {
+// ── Status poll loop ────────────────────────────────────────────────────────
+function fmtSecs(ms){ const s=(ms||0)/1000; return s>=1 ? s.toFixed(1)+"s" : Math.round(ms||0)+"ms"; }
+async function startPollLoop(){
   if (pollTimer) clearInterval(pollTimer);
   const tick = async () => {
-    try {
-      const r = await fetch("/webrtc/status", {cache: "no-store"});
-      if (r.ok) {
+    try{
+      const r = await fetch("/webrtc/status",{cache:"no-store"});
+      if (r.ok){
         const j = await r.json();
-        renderCaptions(j.recent_descriptions || []);
-        if (j.currently_speaking_text) {
+        ingestDescriptions(j.recent_descriptions);
+
+        // Now speaking — text + equalizer state
+        if (j.currently_speaking_text){
           $speaking.textContent = j.currently_speaking_text;
-          $speaking.classList.remove("opacity-50");
-          if (j.currently_speaking_ocr && j.currently_speaking_ocr.length > 0) {
-            $speakingOcr.textContent = "OCR: \"" + j.currently_speaking_ocr.slice(0, 200) + "\"";
+          $speaking.classList.remove("text-gray-600");
+          // equalizer: lively + emerald while a description plays
+          $eq.className = "eq text-emerald-400";
+          $nsState.textContent = "speaking";
+          $nsState.className = "text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300";
+          const sp = parseSlide(j.currently_speaking_text);
+          if (sp.n!=null){ $speakingBadge.textContent = "slide "+sp.n; $speakingBadge.classList.remove("hidden"); }
+          if (j.currently_speaking_ocr){
+            $speakingOcr.textContent = 'OCR: "'+j.currently_speaking_ocr.slice(0,200)+'"';
             $speakingOcr.classList.remove("hidden");
-          } else {
-            $speakingOcr.classList.add("hidden");
-          }
+          } else $speakingOcr.classList.add("hidden");
         } else {
-          $speaking.textContent = "(silent — listening to speaker)";
-          $speaking.classList.add("opacity-50");
+          $speaking.textContent = "Listening to the speaker…";
+          $speaking.classList.add("text-gray-600");
+          // equalizer: gentle + grey while just relaying the speaker
+          $eq.className = "eq calm text-gray-600";
+          $nsState.textContent = "listening";
+          $nsState.className = "text-[10px] px-2 py-0.5 rounded-full bg-white/5 text-gray-400";
+          $speakingBadge.classList.add("hidden");
           $speakingOcr.classList.add("hidden");
         }
-        const va = j.ffmpeg_video_alive ? "✓" : "✗";
-        const aa = j.ffmpeg_audio_alive ? "✓" : "✗";
-        const candAge = (j.candidate_age_s || 0).toFixed(1);
-        let msg = "ffmpeg V:" + va + " A:" + aa
-          + " · video " + (j.video_fps || 0).toFixed(0) + "fps"
-          + " · " + (j.mixer_state || "—")
-          + " · cand " + candAge + "s"
-          + " · committed " + (j.candidates_committed || 0)
-          + " · dedup " + (j.dedup_skipped || 0)
-          + " · cpu " + (j.cpu_percent || 0).toFixed(0) + "%";
-        if (mode === "http") {
-          msg += " · segs " + (j.audio_segments_written || 0);
-        }
-        setStatus(msg);
+
+        // Pipeline health
+        $("hVideo").innerHTML = (j.ffmpeg_video_alive?'<span class="text-emerald-400">● live</span>':'<span class="text-red-400">● down</span>') + ' <span class="text-gray-500">'+(j.video_fps||0).toFixed(0)+'fps</span>';
+        $("hAudio").innerHTML = (j.ffmpeg_audio_alive?'<span class="text-emerald-400">● live</span>':'<span class="text-red-400">● down</span>') + ' <span class="text-gray-500">'+(j.audio_fps||0).toFixed(0)+'fps</span>';
+        $("hMixer").textContent = j.mixer_state||"—";
+        // Reclaim row: show "active" (pulsing) while the mixer is actually
+        // draining the backlog in CATCHUP, "on" when armed, "off" if disabled.
+        if (j.compression_mode!=="ON") $("hReclaim").innerHTML = '<span class="text-gray-500">off</span>';
+        else if (j.mixer_state==="CATCHUP") $("hReclaim").innerHTML = '<span class="text-emerald-300 pulse">● reclaiming</span>';
+        else $("hReclaim").innerHTML = '<span class="text-emerald-400">on</span>';
+
+        // Slide region (auto-focus for small slides in a wide scene)
+        if (j.slide_roi_mode==="off") $("hRoi").innerHTML = '<span class="text-gray-500">full screen</span>';
+        else if (j.slide_roi && j.slide_roi_coverage!=null)
+          $("hRoi").innerHTML = '<span class="text-emerald-300">● focused</span> <span class="text-gray-500">'+Math.round(j.slide_roi_coverage*100)+'% of frame</span>';
+        else $("hRoi").innerHTML = '<span class="text-gray-400">'+(j.slide_roi_mode==="manual"?"manual":"scanning…")+'</span>';
+
+        // Metric tiles
+        $("mSlides").textContent = j.candidates_committed||0;
+        $("mDups").textContent = (j.dedup_skipped||0);
+        $("mSilence").textContent = Math.round((j.silence_dropped_total_ms||0)/1000)+"s";
+        $("mFillers").textContent = j.filler_frames_removed_total||0;
+        $("mFillersSec").textContent = "≈"+Math.round((j.filler_frames_removed_total||0)*20/1000)+"s";
+
+        // System
+        $("sFps").textContent = (j.video_fps||0).toFixed(0)+" / "+(j.audio_fps||0).toFixed(0);
+        $("sHaiku").textContent = j.vision_calls||0;
+        $("sTts").textContent = j.tts_played||0;
+        $("sSegs").textContent = j.audio_segments_written||0;
+        $("sCpu").textContent = (j.cpu_percent||0).toFixed(0)+"% / "+(j.mem_gb||0).toFixed(1)+"GB";
+        $hdrListeners.textContent = j.peers!=null ? j.peers : "1";
       }
-      // Buffered/behind-live indicator
-      if (mode === "http") {
-        let bufAheadS = 0, behindS = 0;
-        try {
-          if ($audio.buffered.length) {
-            const last = $audio.buffered.length - 1;
-            bufAheadS = $audio.buffered.end(last) - $audio.currentTime;
-            behindS = $audio.buffered.end(last) - $audio.currentTime;
-          }
-        } catch (_) {}
-        $lat.textContent = "buffered " + bufAheadS.toFixed(1) + "s · ~" + behindS.toFixed(0) + "s behind live";
-        $behindLabel.textContent = behindS < 1 ? "near live" : "−" + behindS.toFixed(0) + "s behind live";
-      } else if (peerId && !userIsScrubbing) {
-        const pr = await fetch("/webrtc/peer/" + peerId, {cache: "no-store"});
-        if (pr.ok) {
-          const pj = await pr.json();
-          lastBehindS = pj.behind_live_s || 0;
-          $scrub.value = String(Math.round(lastBehindS));
-          if (lastBehindS < 1) {
-            $behindLabel.textContent = "at live";
-          } else {
-            $behindLabel.textContent = "−" + lastBehindS.toFixed(1) + "s behind live";
-          }
-        }
+
+      // Behind-live indicator
+      if (mode==="http"){
+        let behindS=0;
+        try{ if($audio.buffered.length){ const last=$audio.buffered.length-1; behindS=$audio.buffered.end(last)-$audio.currentTime; } }catch(_){}
+        $("hBehind").textContent = behindS<1 ? "~live" : "−"+behindS.toFixed(0)+"s";
+        if (!userIsScrubbing) $behindLabel.textContent = behindS<1 ? "near live" : "−"+behindS.toFixed(0)+"s behind live";
+      } else if (peerId && !userIsScrubbing){
+        const pr = await fetch("/webrtc/peer/"+peerId,{cache:"no-store"});
+        if (pr.ok){ const pj=await pr.json(); lastBehindS=pj.behind_live_s||0; $scrub.value=String(Math.round(lastBehindS));
+          $("hBehind").textContent = lastBehindS<1?"~live":"−"+lastBehindS.toFixed(0)+"s";
+          $behindLabel.textContent = lastBehindS<1?"at live":"−"+lastBehindS.toFixed(1)+"s behind live"; }
       }
-    } catch (_) {}
+      if (!$audio.paused) setLive("live");
+    }catch(_){}
   };
-  tick();
-  pollTimer = setInterval(tick, 1000);
+  tick(); pollTimer=setInterval(tick,1000);
 }
 
-// ── Scrub interaction ──────────────────────────────────────────────────────
-$scrub.addEventListener("input", () => {
-  userIsScrubbing = true;
-  const v = parseInt($scrub.value, 10) || 0;
-  $behindLabel.textContent = v < 1 ? "at live" : "−" + v + "s behind live";
+// ── Transport ───────────────────────────────────────────────────────────────
+$scrub.addEventListener("input", ()=>{ userIsScrubbing=true; const v=parseInt($scrub.value,10)||0;
+  $behindLabel.textContent = v<1?"at live":"−"+v+"s behind live"; });
+$scrub.addEventListener("change", async ()=>{
+  const behindS=parseInt($scrub.value,10)||0;
+  if (mode==="webrtc"){ if(peerId) await fetch("/webrtc/seek",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({peer_id:peerId,behind_live_s:behindS})}); }
+  else { try{ const buf=$audio.buffered; if(buf.length){ const edge=buf.end(buf.length-1); $audio.currentTime=Math.max(buf.start(0),edge-behindS); } }catch(_){} }
+  setTimeout(()=>{ userIsScrubbing=false; },800);
 });
-$scrub.addEventListener("change", async () => {
-  const behindS = parseInt($scrub.value, 10) || 0;
-  if (mode === "webrtc") {
-    if (peerId) {
-      await fetch("/webrtc/seek", {
-        method: "POST", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({peer_id: peerId, behind_live_s: behindS}),
-      });
-    }
-  } else {
-    // HTTP/MSE: jump audio.currentTime back. Buffered range covers what we
-    // already have; for further-back positions we'd need to flush + re-prime.
-    try {
-      const buf = $audio.buffered;
-      if (buf.length) {
-        const liveEdge = buf.end(buf.length - 1);
-        const target = Math.max(buf.start(0), liveEdge - behindS);
-        $audio.currentTime = target;
-      }
-    } catch (_) {}
-  }
-  setTimeout(() => { userIsScrubbing = false; }, 800);
+$liveBtn.addEventListener("click", async ()=>{
+  if (mode==="webrtc" && peerId){ await fetch("/webrtc/live",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({peer_id:peerId})}); }
+  else { try{ const buf=$audio.buffered; if(buf.length) $audio.currentTime=buf.end(buf.length-1); }catch(_){} }
+  $scrub.value=0;
 });
-$liveBtn.addEventListener("click", async () => {
-  if (mode === "webrtc" && peerId) {
-    await fetch("/webrtc/live", {
-      method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({peer_id: peerId}),
-    });
-  } else {
-    try {
-      const buf = $audio.buffered;
-      if (buf.length) $audio.currentTime = buf.end(buf.length - 1);
-    } catch (_) {}
-  }
-  $scrub.value = 0;
-});
+$playBtn.addEventListener("click", ()=>{ if($audio.paused){ $audio.play().catch(()=>{});} else { $audio.pause(); setLive("paused"); } });
+$audio.addEventListener("playing", ()=>{ $playBtn.textContent="⏸︎ Pause"; });
+$audio.addEventListener("pause",  ()=>{ $playBtn.textContent="▶ Play"; });
 
-$playBtn.addEventListener("click", () => {
-  if ($audio.paused) { $audio.play().catch(()=>{}); $playBtn.textContent = "⏸︎ Pause"; }
-  else { $audio.pause(); $playBtn.textContent = "▶ Play"; }
-});
-$audio.addEventListener("playing", () => { $playBtn.textContent = "⏸︎ Pause"; });
-$audio.addEventListener("pause",  () => { $playBtn.textContent = "▶ Play"; });
-
-$btn.addEventListener("click", () => {
+// ── Start ─────────────────────────────────────────────────────────────────--
+function doStart(){
+  if (started) return; started=true;
   mode = $low.checked ? "webrtc" : "http";
-  if (mode === "http") startHttp();
-  else startWebRTC();
-});
+  (mode==="http" ? startHttp() : startWebRTC());
+}
+$btn.addEventListener("click", doStart);
 
-document.addEventListener("click", () => {
-  if ($audio.paused && !$audio.ended) $audio.play().catch(()=>{});
-}, true);
+// Tap-to-resume audio (mobile autoplay policies)
+document.addEventListener("click", ()=>{ if(started && $audio.paused && !$audio.ended) $audio.play().catch(()=>{}); }, true);
 
-// ── Mark stutter button ────────────────────────────────────────────────────
-// Posts to /diagnostics/mark with an ISO timestamp so the backend log gets
-// a [USER_MARK] line we can correlate with the surrounding diagnostic data.
-const $markBtn = document.getElementById("markStutterBtn");
-const $markToast = document.getElementById("markToast");
-let _markToastTimer = null;
-$markBtn.addEventListener("click", async () => {
-  const ts = new Date().toISOString();
-  $markBtn.disabled = true;
-  try {
-    await fetch("/diagnostics/mark", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({note: "stutter at " + ts}),
-    });
-    $markToast.textContent = "Marked " + ts.slice(11, 19);
-    $markToast.style.opacity = "1";
-  } catch (_) {
-    $markToast.textContent = "Mark failed — check connection";
-    $markToast.style.opacity = "1";
+// ── Keyboard shortcuts (accessible — no screen needed) ──────────────────────
+document.addEventListener("keydown", (e)=>{
+  const typing = ["INPUT","TEXTAREA"].includes(document.activeElement.tagName);
+  // Ctrl+P / Cmd+P → start listening (overrides browser print)
+  if ((e.ctrlKey || e.metaKey) && (e.key==="p" || e.key==="P")){
+    e.preventDefault();
+    if (!started) doStart();
+    return;
   }
-  if (_markToastTimer) clearTimeout(_markToastTimer);
-  _markToastTimer = setTimeout(() => { $markToast.style.opacity = "0"; }, 1000);
-  setTimeout(() => { $markBtn.disabled = false; }, 250);
-});
-// Keyboard shortcut: 'M' to mark, since tapping on a phone screen mid-stutter
-// is the actual workflow but a Mac listener may want a hotkey too.
-document.addEventListener("keydown", (e) => {
-  if ((e.key === "m" || e.key === "M") && !e.metaKey && !e.ctrlKey
-      && !e.altKey && document.activeElement.tagName !== "INPUT") {
-    $markBtn.click();
-  }
-});
+  if (typing) return;
+  if (!started) return;
+  if (e.code==="Space"){ e.preventDefault(); $playBtn.click(); }
+  else if (e.key==="l" || e.key==="L"){ $liveBtn.click(); }
+}, false);
+
+setLive("idle");
+$btn.focus();
 </script>
 </body>
 </html>
