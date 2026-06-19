@@ -9,7 +9,7 @@ at sensible moments, and streams the result to listeners' phones over
 WebRTC (local Wi-Fi) or HLS (public, via a Cloudflare tunnel). This
 repository is the reference implementation of the techniques described in
 the DIS 2026 paper *"Enhancing Slide Presentation Accessibility for Blind
-and Low-Vision Audiences Through Delay-Buffered Editing"* by Hakim & Hong
+and Low-Vision Audiences Through Delay-Buffered Editing"* by Azizul Haque & Jonggi Hong
 (DOI: [10.1145/3800645.3812965](https://doi.org/10.1145/3800645.3812965)).
 
 ---
@@ -271,7 +271,7 @@ keep speech rhythm natural.
 
 Implementation of techniques described in:
 
-> Hakim, A., & Hong, J. (2026). *Enhancing Slide Presentation Accessibility
+> Haque, A., & Hong, J. (2026). *Enhancing Slide Presentation Accessibility
 > for Blind and Low-Vision Audiences Through Delay-Buffered Editing.*
 > Proceedings of the ACM Conference on Designing Interactive Systems (DIS
 > 2026). DOI: [10.1145/3800645.3812965](https://doi.org/10.1145/3800645.3812965)
