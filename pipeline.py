@@ -65,7 +65,37 @@ DETECT_INTERVAL_S = 1.0 / VIDEO_FPS
 
 # Detection (matches the user's old proven pHash-only detector)
 SAMPLE_INTERVAL_S = 0.4          # 400ms — matches old detector
-CHANGE_HAMMING = 6               # pHash distance to count a frame as "different"
+CHANGE_HAMMING = 1               # a frame counts as "different" when its pHash
+                                 # distance from the previous one EXCEEDS this.
+                                 #
+                                 # Was 6, which made whole slides INVISIBLE to
+                                 # the detector. Diagram-heavy slides sharing a
+                                 # template ("Thematic evolution" following
+                                 # "Country-based collaboration network")
+                                 # collapse to nearly identical perceptual
+                                 # hashes: across that 2m45s window the maximum
+                                 # frame-to-frame distance was 2, so no
+                                 # candidate was ever created — nothing to
+                                 # dedup, nothing to skip, just silence. A
+                                 # 6-hour run produced 42 commits but only 18
+                                 # spoken slides, with gaps up to 5.8 minutes.
+                                 #
+                                 # Measured distance distribution over that run
+                                 # (n=12020 samples): 96.0% are 0 (static
+                                 # screen), 2.5% are 2, 1.5% are >2. Distances
+                                 # are effectively even-valued, so 1 is the only
+                                 # threshold that admits a distance of 2 — 3 or
+                                 # 2 would still have missed the slide above.
+                                 #
+                                 # Cost: 476 candidate triggers per 6 h instead
+                                 # of 104 (~1.3/min). Those extra candidates are
+                                 # what the downstream chain exists to filter —
+                                 # the 3 s stability window, then certain-dup
+                                 # (<=2), OCR text, and description similarity,
+                                 # all validated over a 6-hour run (5 correct
+                                 # rescues, 5 correct rejections, 0 errors).
+                                 # Raise to 3 if false candidates become a
+                                 # problem on motion-heavy content.
                                  # (was 10; live screen-captured slides produce
                                  # frame-to-frame deltas of 4-8 on real changes)
 SUSTAIN_FRAMES = 1               # consecutive different frames to confirm
@@ -75,8 +105,32 @@ SUSTAIN_FRAMES = 1               # consecutive different frames to confirm
                                  # anti-flicker guard. Sustain >1 was blocking
                                  # commits because changed_run reset to 0 on
                                  # the very next sample after the cut.)
-STABILITY_WINDOW_S = 5.0         # candidate must persist this long before commit
-DEDUP_HAMMING = 6                # ≤6 = same slide as a prior committed one
+STABILITY_WINDOW_S = 3.0         # candidate hold before commit. Lets a slide
+                                 # BUILD-UP finish (title appears, then bullets
+                                 # animate in) so it is described ONCE, complete.
+                                 # Measured at 0.0: the same slide was described
+                                 # twice ("Historically." then "Historically. FT
+                                 # All Share shows 4.5%...") and 184 commits
+                                 # produced only 25 spoken slides — 80% of the
+                                 # Haiku calls were wasted on SKIPs.
+                                 # NOTE: this does NOT affect listener delay; it
+                                 # only shifts when a description arrives.
+DEDUP_HAMMING = 6                # ≤6 = candidate duplicate of a prior slide
+DEDUP_CERTAIN_HAMMING = 1        # ≤1 = certainly the same frame; reject without
+                                 # consulting OCR. Between this and
+                                 # DEDUP_HAMMING the match is ambiguous (same
+                                 # template, possibly different text) and the
+                                 # OCR text decides — see _try_commit.
+                                 #
+                                 # Must stay >= CHANGE_HAMMING, or the dedup
+                                 # stage silently undoes the detection stage:
+                                 # at 2 it auto-rejected exactly the distance-2
+                                 # near-matches that CHANGE_HAMMING=1 now exists
+                                 # to catch (the "Thematic evolution" slide),
+                                 # throwing them away before OCR could speak.
+                                 # At 1, an identical re-detection (distance 0
+                                 # or 1) still short-circuits cheaply, while a
+                                 # distance-2 slide gets its OCR arbitration.
 UNIQUE_HASHES_MAX = 500
 MAX_TTS_QUEUE = 3
 RECENT_TOPICS_KEEP = 5
@@ -95,6 +149,20 @@ OCR_DEDUP_DIFF_THRESHOLD = 0.30   # dup if overlap/containment > 70%. Build-up
 OCR_DEDUP_MIN_WORDS = 2           # 2 so short titles ("The Problem") are judged
 OCR_SIG_MAX = 200                 # how many recent described slides to remember
 
+# Description-level dedup (post-Haiku). Catches near-duplicate slides that the
+# pHash + OCR layers miss — typically image-heavy slides (little/no OCR text)
+# where a small region changed so the pHash drifted, but the GENERATED
+# description is essentially the same. After Haiku returns, the new
+# description's content-word set is compared (containment coefficient) to
+# recently-spoken descriptions; if overlap ≥ DESC_DEDUP_OVERLAP the slide is
+# dropped (not spoken, slide number rolled back). TUNABLE: raise toward 0.85 to
+# dedup less aggressively, lower toward 0.55 to dedup more.
+DESC_DEDUP_OVERLAP = 0.70
+DESC_SIG_MAX = 50                 # how many recent descriptions to compare against
+DESC_TITLE_LOOKBACK = 3           # same-title backstop only looks this far back,
+                                  # so a title legitimately revisited later in
+                                  # the talk is still described
+
 # Auto slide-region detection. In a wide scene (hall + speaker + a small
 # projected slide) the slide is the rectangle where on-screen text clusters.
 # We re-detect it periodically and focus pHash change-detection + OCR there.
@@ -102,6 +170,12 @@ OCR_SIG_MAX = 200                 # how many recent described slides to remember
 # center-80% crop — so the full-screen case behaves exactly as before.
 SLIDE_ROI_INTERVAL_S = 3.0        # how often to re-detect the slide region
 SLIDE_ROI_EMA = 0.5              # smoothing toward each new detection
+# Full-screen fallback margins (fractions trimmed from each edge). Small on
+# purpose: enough to drop the macOS menu bar / clock / dock (which change every
+# frame and would defeat dedup), while keeping ~92% of the screen. Was a
+# center-80% crop = only 64% of the frame.
+FULLSCREEN_MARGIN_V = 0.03       # 3% off top and bottom
+FULLSCREEN_MARGIN_H = 0.01       # 1% off left and right
 
 # Mixer state machine
 SILENCE_THRESH_DBFS = -45.0
@@ -111,7 +185,19 @@ SILENCE_PEAK = int(10 ** (SILENCE_THRESH_DBFS / 20.0) * 32767)   # ≈ 184
 # cross-video contamination bug: when the user switches between source
 # videos, the buffer can hold at most 30s of stale audio from the previous
 # video, instead of the prior 120s. Anything older is dropped.
-MAX_BUFFER_FRAMES = int(30_000 / FRAME_MS)                       # 30 s = 1500 frames
+# Hard ceiling on held speaker audio. On overflow the mixer discards half the
+# buffer — the listener permanently LOSES that speech, so this must be sized for
+# the worst burst, not the average.
+#
+# 30 s was too small: slides arrive in bursts (measured 3 descriptions within
+# 14 s), and each description holds back the speaker for its whole duration, so
+# a burst injects tens of seconds of debt at once. That overflowed and dropped
+# 15 s of a 16-minute talk. 90 s absorbs the burst; time-stretch then drains it
+# back down within a minute or two (measured: backlog recovers to 0.1-4 s).
+#
+# The tradeoff is bounded, temporary latency instead of permanent audio loss —
+# strictly the better failure mode for an accessibility tool.
+MAX_BUFFER_FRAMES = int(90_000 / FRAME_MS)                       # 90 s = 4500 frames
 
 # Silence reclaim (Stage 1). In CATCHUP, when the listener is behind and
 # buffered audio is draining, silence runs longer than SILENCE_KEEP_MS get
@@ -121,6 +207,65 @@ MAX_BUFFER_FRAMES = int(30_000 / FRAME_MS)                       # 30 s = 1500 f
 SILENCE_KEEP_MS = 1000
 SILENCE_KEEP_FRAMES = SILENCE_KEEP_MS // FRAME_MS   # 50 frames @ 20ms
 
+# ── Time-stretch catch-up ────────────────────────────────────────────────────
+# Silence-trimming + filler removal only reclaim time when the speaker PAUSES.
+# A continuous talker leaves nothing to reclaim, so the backlog created by each
+# spoken description (5-8 s of speech piles up while TTS plays) never drains and
+# the listener ends up permanently ~20-30 s behind live.
+#
+# Time-stretch fixes that: while CATCHUP has a backlog, play the buffered speech
+# slightly FASTER (pitch preserved) so the backlog drains continuously instead of
+# only during pauses. Implemented as overlap-add (OLA): to remove 20 ms we consume
+# TWO buffered frames and emit ONE cross-faded blend of them. The crossfade is what
+# keeps it click-free; dropping a frame outright would be audible.
+#
+# Rate is proportional to how far behind we are: 1.0x at/below the target (natural
+# speech, no processing) ramping to CATCHUP_MAX_RATE at CATCHUP_RAMP_MS behind.
+# ── Filler-removal delay line ────────────────────────────────────────────────
+# Filler-word removal (Whisper) can only flag words it has already seen, so it
+# needs a short backlog of buffered speech to work on. The latency work removed
+# the backlog — the mixer now spends most of its time in LIVE, passing audio
+# through 1:1 — which silently disabled filler removal (measured: only 1-3 s of
+# filler removed across a 35-minute talk, and listeners reported hearing "a lot
+# of filler words").
+#
+# This keeps a small always-on delay line so Whisper always has material. Audio
+# is held this long before being emitted; reclaim (silence trimming, filler
+# dropping, time-stretch) only runs on backlog ABOVE the floor, so the delay
+# line stays steady instead of collapsing to zero and re-forming (which would
+# punch an audible gap into the stream).
+#
+# DISABLED (0) after measurement. Two reasons:
+#   1. It never engaged. The CATCHUP branch triggers on `if speaker_buffer:`,
+#      so the first frame appended here is drained 1:1 on the very next tick
+#      and the line never accumulated to the floor ("delay line primed" fired
+#      0 times in a 16-minute run).
+#   2. It would not have helped much anyway. The backlog already sits at 5-15 s
+#      for ~35% of a run (post-description catch-up), so Whisper has material —
+#      yet only 2.1 s of filler was found. The limit is what whisper-tiny
+#      detects, not the size of the window. Adding 2 s of delay would have
+#      increased the backlog debt that is already overflowing the buffer.
+# Set >0 to re-enable priming (and fix the CATCHUP interception first).
+FILLER_DELAY_MS = 0
+FILLER_DELAY_FRAMES = FILLER_DELAY_MS // FRAME_MS      # 100 frames @ 20ms
+
+# Tuned to chase the live edge continuously rather than settle a few seconds
+# behind it. Every description puts the listener further behind; this is what
+# claws that time back, so it ramps early and hard:
+#   at 0.5 s behind -> 1.00x (natural speech, no processing)
+#   at 2.0 s behind -> ~1.17x
+#   at 3.0 s behind -> ~1.28x
+#   at 5.5 s behind -> 1.50x (ceiling)
+# At 1.5x, one minute of playback reclaims 30 s of delay, so even a burst of
+# descriptions is absorbed within a minute or two instead of persisting.
+CATCHUP_TARGET_MS = 500      # drain to this backlog, then stop stretching (1.0x)
+CATCHUP_RAMP_MS = 5500       # backlog at which CATCHUP_MAX_RATE is reached
+CATCHUP_MAX_RATE = 1.50      # max playback rate, pitch preserved. BLV listeners
+                             # routinely use fast speech (this project's own TTS
+                             # runs at 1.5x), so this is comfortable — and it is
+                             # the agreed upper bound: do not raise it further.
+                             # Lower to ~1.25 if the speed-up becomes noticeable.
+
 # TTS pause-coupling: a ready TTS clip is held in a "pending" slot until
 # either the listener-perceived audio has been silent for at least
 # TTS_PAUSE_TRIGGER_S, OR the clip has been waiting for TTS_HOLD_MAX_S.
@@ -128,7 +273,11 @@ SILENCE_KEEP_FRAMES = SILENCE_KEEP_MS // FRAME_MS   # 50 frames @ 20ms
 # the next natural pause after it's synthesized (max-hold caps the wait so a
 # continuously-talking speaker doesn't block it forever).
 TTS_PAUSE_TRIGGER_S = 0.30
-TTS_HOLD_MAX_S = 8.0
+TTS_HOLD_MAX_S = 2.5   # was 8.0. Measured: queue_wait was the single biggest
+                       # slice of description lag (p50 5.4 s, p95 8.0 s) because
+                       # 40% of descriptions never found a pause and waited the
+                       # full 8 s. 2.5 s caps that; the cost is that a
+                       # description is more likely to start over the speaker.
 
 MIXED_Q_MAX = 5     # legacy / probe-tone fallback
 # speaker_q is unbounded — frames are 3.8KB each, even 60s @ 50fps is ~11MB.
@@ -142,7 +291,12 @@ RING_HISTORY_FRAMES = RING_HISTORY_S * 1000 // FRAME_MS
 # How far behind the producer a fresh peer starts (frames). 3 = 60ms.
 PEER_INITIAL_LAG_FRAMES = 3
 # If a peer's playhead falls more than this many frames behind, snap back.
-PEER_UNDERRUN_FRAMES = 200   # 4 s
+PEER_UNDERRUN_FRAMES = 200   # 4 s — EMERGENCY resync only. Hitting this skips
+                             # 4 s of audio in one jump, which is audible as a
+                             # hard cut mid-sentence. With deadline pacing +
+                             # gentle catch-up below this should never fire.
+PEER_GENTLE_CATCHUP_FRAMES = 15   # 300 ms. Past this the peer skips ONE 20 ms
+                                  # frame per tick to close the gap smoothly.
 
 # How long between ffmpeg auto-respawn attempts (capped exponential backoff)
 RESPAWN_BACKOFF_INIT_S = 0.5
@@ -206,12 +360,58 @@ def _frame_to_jpeg(frame_bgr: np.ndarray, max_side: int = 1024) -> bytes:
     return buf.tobytes()
 
 
+def _filler_model_name() -> str:
+    """Actual whisper model in use (see filler_removal.MODEL_SIZE)."""
+    try:
+        import filler_removal
+        return filler_removal.MODEL_SIZE
+    except Exception:
+        return "?"
+
+
 def _frame_peak_int16(buf: bytes) -> int:
     """Peak abs value of an int16-stereo packed frame."""
     arr = np.frombuffer(buf, dtype=np.int16)
     if arr.size == 0:
         return 0
     return int(np.max(np.abs(arr)))
+
+
+# Linear crossfade ramp, computed once. Shape (SAMPLES_PER_FRAME, 1) so it
+# broadcasts across both stereo channels.
+_XFADE_RAMP = np.linspace(0.0, 1.0, SAMPLES_PER_FRAME,
+                          dtype=np.float32).reshape(-1, 1)
+
+
+def _crossfade_frames(a: bytes, b: bytes) -> bytes:
+    """Overlap-add two 20 ms int16-stereo frames into ONE output frame.
+
+    Used for time-stretch catch-up: consuming two buffered frames but emitting
+    one removes 20 ms of wall-clock from the backlog. The output ramps smoothly
+    from `a` to `b` (a fades out as b fades in), so there is no click — which is
+    what you would get by simply discarding a frame.
+
+    Pitch is unaffected: no resampling happens, we only shorten the timeline.
+    """
+    try:
+        av = np.frombuffer(a, dtype=np.int16).reshape(-1, CHANNELS).astype(np.float32)
+        bv = np.frombuffer(b, dtype=np.int16).reshape(-1, CHANNELS).astype(np.float32)
+    except ValueError:
+        return a   # malformed frame — fail safe, emit as-is
+    if av.shape != bv.shape or av.shape[0] != SAMPLES_PER_FRAME:
+        return a
+    out = av * (1.0 - _XFADE_RAMP) + bv * _XFADE_RAMP
+    return np.clip(out, -32768, 32767).astype(np.int16).tobytes()
+
+
+def _catchup_rate_for(backlog_ms: int) -> float:
+    """Playback rate to use for a given backlog. 1.0 (natural) at/below
+    CATCHUP_TARGET_MS, ramping linearly to CATCHUP_MAX_RATE at CATCHUP_RAMP_MS."""
+    if backlog_ms <= CATCHUP_TARGET_MS:
+        return 1.0
+    span = max(1, CATCHUP_RAMP_MS - CATCHUP_TARGET_MS)
+    frac = min(1.0, (backlog_ms - CATCHUP_TARGET_MS) / span)
+    return 1.0 + (CATCHUP_MAX_RATE - 1.0) * frac
 
 
 def make_sine_frame_bytes(phase: float, freq_hz: float = 440.0,
@@ -474,12 +674,25 @@ class LivePipeline:
         # a failed slide can still be retried.
         self._recent_ocr_sigs: Deque[Tuple[int, frozenset]] = deque(
             maxlen=OCR_SIG_MAX)
+        # Content-word sets of recently-SPOKEN descriptions, for post-Haiku
+        # description-similarity dedup (see DESC_DEDUP_OVERLAP).
+        # (title, content-word-set) of recently-SPOKEN descriptions.
+        self._recent_desc_sigs: Deque[Tuple[str, frozenset]] = deque(
+            maxlen=DESC_SIG_MAX)
 
         # Auto slide-region (ROI). None ⇒ center-80% crop fallback. Updated by
         # the _slide_roi_loop background task; read by _crop_to_roi.
         self._slide_roi: Optional[Tuple[float, float, float, float]] = None
+        # Auto slide-region detection is OFF by default: measured, it cropped to
+        # a MEDIAN of 34% of the screen (as low as 4%) and moved 133 times in one
+        # run. An unstable crop makes the SAME slide look different each time —
+        # different pHash, different OCR, different description — which defeats
+        # dedup and causes a slide to be described twice. Full screen is both
+        # what the user sees and far more stable.
+        # Opt back in with ASPIRE_ENABLE_SLIDE_ROI=1 (useful when the slide is
+        # genuinely a small part of a wide conference-hall shot).
         self._slide_roi_disabled: bool = (
-            os.environ.get("ASPIRE_DISABLE_SLIDE_ROI") == "1")
+            os.environ.get("ASPIRE_ENABLE_SLIDE_ROI") != "1")
         self._slide_roi_manual: Optional[Tuple[float, float, float, float]] = None
         _roi_env = os.environ.get("ASPIRE_SLIDE_ROI")
         if _roi_env:
@@ -624,13 +837,25 @@ class LivePipeline:
         # draining the backlog (same reclaim mechanism as over-long silence).
         # Fail-open: if whisper is missing/slow/errors, nothing here affects
         # the live audio path.
+        # DISABLED BY DEFAULT. Measured: with the mixer now chasing the live
+        # edge, the speaker backlog is empty ~66% of the time, so Whisper's
+        # "drop these frames" answers arrive after those frames have already
+        # been played — 8 detections produced 0.0 s actually removed. Filler
+        # removal and staying live are mutually exclusive as built: it needs a
+        # backlog to work on, and there deliberately isn't one any more.
+        # Turning it off also frees the CPU it was contending with TTS for.
+        # Re-enable with ASPIRE_ENABLE_FILLER=1 (needs a held buffer to help).
         self._filler_disabled: bool = (
-            os.environ.get("ASPIRE_DISABLE_FILLER") == "1"
+            os.environ.get("ASPIRE_ENABLE_FILLER") != "1"
         )
         self._filler_drop_seqs: set = set()          # abs seqs to drop
         self._filler_snap_q: "_stdlib_queue.Queue" = _stdlib_queue.Queue(maxsize=1)
         self._filler_thread: Optional[threading.Thread] = None
         self._filler_frames_removed_total: int = 0
+        # Time-stretch catch-up: frames absorbed by OLA crossfade (each one is
+        # 20 ms of listener lag reclaimed WITHOUT deleting any speech).
+        self._timestretch_frames_removed_total: int = 0
+        self._catchup_rate_latest: float = 1.0
         # Absolute count of frames popped off the LEFT of speaker_buffer (the
         # CATCHUP backlog). This is the coordinate space filler drop-seqs use:
         # the oldest frame in speaker_buffer always has seq == _buf_out_seq.
@@ -794,6 +1019,12 @@ class LivePipeline:
             "filler_frames_removed_total": self._filler_frames_removed_total,
             "silence_dropped_total_ms":
                 self._silence_dropped_total_frames * FRAME_MS,
+            # Time-stretch catch-up (latency analysis)
+            "timestretch_frames_removed_total":
+                self._timestretch_frames_removed_total,
+            "timestretch_reclaimed_ms":
+                self._timestretch_frames_removed_total * FRAME_MS,
+            "catchup_rate": round(self._catchup_rate_latest, 3),
             "slide_roi": list(self._slide_roi) if self._slide_roi else None,
             "slide_roi_coverage": (round(self._slide_roi[2] * self._slide_roi[3], 3)
                                    if self._slide_roi else None),
@@ -909,6 +1140,9 @@ class LivePipeline:
             "filler_frames_removed_total": self._filler_frames_removed_total,
             "silence_dropped_total_ms":
                 self._silence_dropped_total_frames * FRAME_MS,
+            "timestretch_frames_removed_total":
+                self._timestretch_frames_removed_total,
+            "catchup_rate": round(self._catchup_rate_latest, 3),
             "late_segments_total": self._late_segments_total,
             "audio_segments_written": self._stats.get("audio_segments_written", 0),
             "cpu_total_latest": self.cpu_percent,
@@ -944,13 +1178,13 @@ class LivePipeline:
         self._filler_drop_seqs = set()
         if self._filler_disabled:
             log.info("[filler] filler-word removal: OFF "
-                     "(ASPIRE_DISABLE_FILLER=1)")
+                     "(default — set ASPIRE_ENABLE_FILLER=1 to re-enable)")
         else:
             self._filler_thread = threading.Thread(
                 target=self._filler_worker, daemon=True, name="filler-worker")
             self._filler_thread.start()
             log.info("[filler] filler-word removal: ON "
-                     "(whisper tiny, CATCHUP backlog only)")
+                     "(whisper %s, CATCHUP backlog only)" % _filler_model_name())
 
         # Slide-region focus mode (for small slides inside a wide scene).
         if self._slide_roi_manual is not None:
@@ -1412,7 +1646,7 @@ class LivePipeline:
             log.warning("[filler] module import failed (%s) — disabled", e)
             return
         remover = FillerRemover()
-        log.info("[filler] worker started (whisper tiny, backlog-only)")
+        log.info("[filler] worker started (whisper %s, backlog-only)", _filler_model_name())
         while self._running:
             try:
                 item = self._filler_snap_q.get(timeout=0.5)
@@ -1803,8 +2037,15 @@ class LivePipeline:
 
     # ── slide detection (old proven pHash-only logic) ────────────────────
     def _crop_to_roi(self, frame_bgr: np.ndarray) -> np.ndarray:
-        """Crop to the detected slide region if we have one, else the
-        center-80% crop (the original full-screen behavior)."""
+        """Crop to the detected slide region if one is active, else keep
+        essentially the WHOLE screen.
+
+        The fallback used to be a center-80% crop (only 64% of the frame),
+        which cut off slide edges. It now trims just enough to remove the macOS
+        menu bar / clock / dock — those change on every capture (the clock
+        ticks) and would otherwise make the same slide look "new" and defeat
+        dedup — while keeping ~92% of the screen.
+        """
         h, w = frame_bgr.shape[:2]
         roi = self._slide_roi
         if roi is not None:
@@ -1813,7 +2054,8 @@ class LivePipeline:
             x1 = min(w, int((x + bw) * w)); y1 = min(h, int((y + bh) * h))
             if (x1 - x0) >= 16 and (y1 - y0) >= 16:
                 return frame_bgr[y0:y1, x0:x1]
-        return frame_bgr[int(h * 0.10):int(h * 0.90), int(w * 0.10):int(w * 0.90)]
+        return frame_bgr[int(h * FULLSCREEN_MARGIN_V):int(h * (1.0 - FULLSCREEN_MARGIN_V)),
+                         int(w * FULLSCREEN_MARGIN_H):int(w * (1.0 - FULLSCREEN_MARGIN_H))]
 
     def _phash_for(self, frame_bgr: np.ndarray):
         cropped = self._crop_to_roi(frame_bgr)
@@ -1874,6 +2116,80 @@ class LivePipeline:
             overlap = len(sig & prev) / denom    # containment coefficient
             if (1.0 - overlap) < OCR_DEDUP_DIFF_THRESHOLD:
                 return True
+        return False
+
+    # Common words that carry no slide-identity signal; dropped before
+    # comparing descriptions so two unrelated slides aren't called duplicates
+    # just because both say "a", "the", "with", "shows", etc.
+    _DESC_STOPWORDS = frozenset({
+        "slide", "a", "an", "the", "of", "in", "on", "at", "to", "and", "or",
+        "with", "across", "against", "below", "above", "over", "under", "into",
+        "is", "are", "as", "by", "for", "from", "this", "that", "it", "its",
+        "shows", "showing", "image", "visible", "content", "no", "educational",
+    })
+
+    @classmethod
+    def _desc_signature(cls, desc: str) -> frozenset:
+        """Content-word set of a description, minus the 'Slide N.' prefix and
+        stopwords. Used for post-Haiku description-similarity dedup."""
+        body = re.sub(r"^\s*slide\s+\d+\s*[.:]\s*", "", desc or "",
+                      flags=re.IGNORECASE)
+        toks = re.findall(r"[a-z0-9]+", body.lower())
+        return frozenset(t for t in toks
+                         if len(t) >= 2 and t not in cls._DESC_STOPWORDS)
+
+    @staticmethod
+    def _desc_title(desc: str) -> str:
+        """The leading title segment of a description — the first sentence of
+        the body, normalized. Haiku emits "Slide N. {Title}. {summary}", so two
+        stages of the same slide build-up share this exactly even when their
+        summaries describe different amounts of content."""
+        body = re.sub(r"^\s*slide\s+\d+\s*[.:]\s*", "", desc or "",
+                      flags=re.IGNORECASE)
+        first = re.split(r"(?<=[.!?])\s+", body.strip(), maxsplit=1)[0]
+        return " ".join(re.findall(r"[a-z0-9]+", first.lower()))
+
+    def _is_duplicate_desc(self, sig: frozenset, title: str = "") -> bool:
+        """True if `sig` is the same slide as a recently-spoken description.
+
+        Containment coefficient |A∩B| / min(|A|,|B|) — deliberately NOT Jaccard,
+        because a slide BUILD-UP is a subset: the title-only stage
+        ("Historically.") is contained in the finished slide ("Historically. FT
+        All Share shows 4.5%…"), so containment is ~1.0 while Jaccard is low.
+
+        Short titles are the common case for build-ups, so 1-2 word signatures
+        are judged too — but they require FULL containment, since a single
+        shared word is not enough evidence on its own.
+        """
+        if not sig:
+            return False
+        for prev_title, prev in self._recent_desc_sigs:
+            if not prev:
+                continue
+            denom = min(len(sig), len(prev))
+            if denom == 0:
+                continue
+            overlap = len(sig & prev) / denom
+            # 1-2 content words: only an exact subset counts as a duplicate.
+            threshold = 1.0 if denom <= 2 else DESC_DEDUP_OVERLAP
+            if overlap >= threshold:
+                return True
+        # NOTE: a same-title backstop used to live here, rejecting a slide whose
+        # title matched a recent one regardless of body content. It was removed
+        # because it silently deleted IMAGE slides.
+        #
+        # Measured: a deck showed "The scenario" as text, then "The scenario"
+        # again as a labelled diagram. Haiku described the diagram correctly
+        # ("labeled diagram of a robotic setup with cobot, horizontal beamer,
+        # hand and object tracking overlays") and the backstop threw it away on
+        # the title match alone — even though body overlap was just 0.18, far
+        # below the 0.70 duplicate bar.
+        #
+        # It is also redundant: a genuine build-up (title-only, then title+body)
+        # scores ~1.00 containment and is already caught by the word-overlap
+        # check above. The backstop only ever changed the outcome for slides
+        # with long, genuinely different bodies that happen to share a section
+        # heading — which are new slides, not duplicates.
         return False
 
     @staticmethod
@@ -1940,81 +2256,101 @@ class LivePipeline:
             if not desc:
                 self._stats["vision_empty_responses"] = (
                     self._stats.get("vision_empty_responses", 0) + 1)
-                log.warning("[vision] empty response after retry, slide#%d skipped, dedup rolled back",
-                            slide_no)
+                # Expected path, not a fault: the model returns SKIP for frames
+                # with nothing to describe (speaker shot, transition, logo).
+                # Logged at INFO so real warnings stay visible.
+                log.info("[vision] no describable content for slide#%d — "
+                         "skipped, dedup rolled back", slide_no)
                 self._rollback_unique_hash_for(slide_no)
                 return
 
-            # Streaming Kokoro: yield per-sentence chunks. First chunk arrives
-            # in ~300-500ms; subsequent chunks synthesize in parallel.
-            from tts_kokoro import synth_stream
-            chunk_idx = 0
+            # Description-similarity dedup (post-Haiku). Catches near-duplicate
+            # slides the pHash/OCR layers miss (image-heavy slides re-described
+            # in slightly different words). Drop without speaking and roll the
+            # slide number back so numbering stays dense.
+            desc_sig = self._desc_signature(desc)
+            desc_title = self._desc_title(desc)
+            if self._is_duplicate_desc(desc_sig, desc_title):
+                self._stats["dedup_skipped"] += 1
+                self._stats["desc_dedup_skipped"] = (
+                    self._stats.get("desc_dedup_skipped", 0) + 1)
+                log.info("[detect] DESC-dedup SKIP slide#%d — description too "
+                         "similar to a recent slide: %r", slide_no, desc[:80])
+                self._rollback_unique_hash_for(slide_no)
+                return
+            self._recent_desc_sigs.append((desc_title, desc_sig))
+
+            # Synthesize the description as ONE utterance.
+            #
+            # This used to synthesize sentence-by-sentence via synth_stream()
+            # and concatenate the pieces. That made sense when the mixer played
+            # each sentence as it arrived, but playback is atomic now — we wait
+            # for the whole description regardless, so splitting bought no
+            # latency and cost prosody: each fragment was synthesized with its
+            # own intonation contour and hard-concatenated, which made short
+            # fragments ("Simple example.") sound clipped and unnatural at the
+            # 1.5x speaking rate, with audible seams between sentences.
+            from tts_kokoro import synth as kokoro_synth_full
             tts_t0 = time.time()
             self.tts_in_progress = True
             diag_events.record("tts", "kokoro_synth_start",
                                slide_no=slide_no)
             try:
-                chunk_start = time.time()
-                async for samples, sr in synth_stream(desc):
-                    chunk_idx += 1
-                    chunk_dt = time.time() - chunk_start
-                    is_first = (chunk_idx == 1)
-                    if is_first:
-                        first_chunk_dt = time.time() - tts_t0
-                        self._tts_times.append(first_chunk_dt)
-                    stereo_s16 = _resample_to_48k_stereo_int16(samples, sr)
-                    audio_dur_s = stereo_s16.shape[0] / SAMPLE_RATE
-                    diag_events.record("tts", "kokoro_synth_end",
-                                       slide_no=slide_no,
-                                       chunk_idx=chunk_idx,
-                                       took_ms=int(chunk_dt * 1000),
-                                       audio_duration_s=round(audio_dur_s, 3))
-                    clip = TTSClip(
-                        samples_int16_stereo=stereo_s16,
-                        text=desc if is_first else "",
-                        slide_no=slide_no,
-                        # Only the FIRST chunk carries commit-time so the
-                        # commit→audible metric measures the right thing
-                        commit_time=commit_time if is_first else 0.0,
-                        haiku_ms=haiku_dt * 1000.0 if is_first else 0.0,
-                        tts_synth_ms=(first_chunk_dt * 1000.0
-                                       if is_first else 0.0),
-                        # All chunks for the same slide share the anchor —
-                        # they should all wait for the listener to reach the
-                        # commit-time speaker position before playing.
-                        anchor_pos=anchor_pos,
-                    )
-                    if self.tts_q.full():
-                        try:
-                            dropped = self.tts_q.get_nowait()
-                            self._stats["tts_dropped"] += 1
-                            self._stats["tts_queue_drops"] += 1
-                            log.warning("[tts] queue full, dropped %r",
-                                        dropped.text[:40])
-                        except asyncio.QueueEmpty:
-                            pass
-                    await self.tts_q.put(clip)
-                    read_pos_at_queue = self._mixer_speaker_pos
-                    diag_events.record(
-                        "queue", "tts_q_put",
-                        slide_no=slide_no,
-                        clip_duration_s=round(audio_dur_s, 3),
-                        q_size_after=self.tts_q.qsize(),
-                        anchor_pos=anchor_pos,
-                        mixer_read_pos_at_queue=read_pos_at_queue,
-                        anchor_gap_frames=max(0, anchor_pos - read_pos_at_queue),
-                    )
-                    chunk_start = time.time()
+                samples, sr = await kokoro_synth_full(desc)
+                full_audio = _resample_to_48k_stereo_int16(samples, sr)
             except Exception as e:
-                log.warning("[tts] stream failed at chunk %d: %s",
-                            chunk_idx, e)
+                log.warning("[tts] synth failed: %s", e)
                 diag_events.record("tts", "kokoro_synth_end",
                                    slide_no=slide_no,
-                                   chunk_idx=chunk_idx,
                                    error=str(e)[:120])
+                self._rollback_unique_hash_for(slide_no)
                 return
             finally:
                 self.tts_in_progress = False
+
+            if full_audio.shape[0] == 0:
+                log.warning("[tts] no audio synthesized for slide#%d — skipped",
+                            slide_no)
+                self._rollback_unique_hash_for(slide_no)
+                return
+
+            full_synth_dt = time.time() - tts_t0
+            diag_events.record("tts", "kokoro_synth_end",
+                               slide_no=slide_no,
+                               took_ms=int(full_synth_dt * 1000),
+                               audio_duration_s=round(
+                                   full_audio.shape[0] / SAMPLE_RATE, 3))
+            self._tts_times.append(full_synth_dt)
+            audio_dur_s = full_audio.shape[0] / SAMPLE_RATE
+            clip = TTSClip(
+                samples_int16_stereo=full_audio,
+                text=desc,
+                slide_no=slide_no,
+                commit_time=commit_time,
+                haiku_ms=haiku_dt * 1000.0,
+                tts_synth_ms=full_synth_dt * 1000.0,
+                anchor_pos=anchor_pos,
+            )
+            if self.tts_q.full():
+                try:
+                    dropped = self.tts_q.get_nowait()
+                    self._stats["tts_dropped"] += 1
+                    self._stats["tts_queue_drops"] += 1
+                    log.warning("[tts] queue full, dropped %r",
+                                dropped.text[:40])
+                except asyncio.QueueEmpty:
+                    pass
+            await self.tts_q.put(clip)
+            read_pos_at_queue = self._mixer_speaker_pos
+            diag_events.record(
+                "queue", "tts_q_put",
+                slide_no=slide_no,
+                clip_duration_s=round(audio_dur_s, 3),
+                q_size_after=self.tts_q.qsize(),
+                anchor_pos=anchor_pos,
+                mixer_read_pos_at_queue=read_pos_at_queue,
+                anchor_gap_frames=max(0, anchor_pos - read_pos_at_queue),
+            )
 
             self.recent_descriptions.append((time.time(), desc))
             self.last_ocr_for_speaking = ocr_text_str or ""
@@ -2042,14 +2378,37 @@ class LivePipeline:
             self._last_dedup_dists.appendleft(min_d if min_d is not None else -1)
 
             decision = "COMMITTED"
-            if min_d is not None and min_d <= DEDUP_HAMMING:
+            # Two-band pHash dedup.
+            #
+            # A single threshold was silently dropping real slides. Slides built
+            # from the SAME TEMPLATE (identical layout, different text) differ by
+            # only ~4-6 bits of a 64-bit perceptual hash, so at <=6 they were
+            # rejected as duplicates — and because this check returned BEFORE
+            # OCR, their text never got a vote. Measured in one 52-minute run:
+            # 7 slides rejected here, all from one visually-similar cluster
+            # (d5962a2f / d52b2a2a / d52a2a2f / …), with the last 10 minutes of
+            # the talk producing 3 rejections and 0 spoken slides.
+            #
+            #   distance <= CERTAIN  -> same frame, reject immediately (cheap)
+            #   CERTAIN < d <= DEDUP -> AMBIGUOUS: run OCR and let the text
+            #                           decide, since only the text distinguishes
+            #                           two slides sharing a template
+            #   distance >  DEDUP    -> clearly new
+            phash_ambiguous = False
+            if min_d is not None and min_d <= DEDUP_CERTAIN_HAMMING:
                 self._stats["dedup_skipped"] += 1
                 decision = "SKIPPED_DEDUP"
                 log.info("[detect] commit-check phash=%s min_dist_to_unique=%d "
                          "threshold=%d → %s",
-                         str(cand_ph)[:8], min_d, DEDUP_HAMMING, decision)
+                         str(cand_ph)[:8], min_d, DEDUP_CERTAIN_HAMMING, decision)
                 self._clear_candidate()
                 return
+            if min_d is not None and min_d <= DEDUP_HAMMING:
+                phash_ambiguous = True
+                log.info("[detect] commit-check phash=%s min_dist_to_unique=%d "
+                         "in ambiguous band (%d-%d) → deferring to OCR text",
+                         str(cand_ph)[:8], min_d,
+                         DEDUP_CERTAIN_HAMMING + 1, DEDUP_HAMMING)
 
             log.info("[detect] commit-check phash=%s min_dist_to_unique=%s "
                      "threshold=%d → %s",
@@ -2085,6 +2444,23 @@ class LivePipeline:
                 self.unique_hashes.append(cand_ph)
                 self._clear_candidate()
                 return
+
+            # Ambiguous pHash band: the text is the only evidence that can tell
+            # two same-template slides apart. If OCR gave us too little to judge
+            # (image-only or text-light slide), stay conservative and treat the
+            # near-match as a duplicate — that preserves the old behavior for
+            # image-heavy decks, where pHash is the only usable signal.
+            if phash_ambiguous and len(sig) < OCR_DEDUP_MIN_WORDS:
+                self._stats["dedup_skipped"] += 1
+                log.info("[detect] commit-check phash=%s ambiguous and OCR "
+                         "text-light (%d words) → treating as duplicate",
+                         str(cand_ph)[:8], len(sig))
+                self.unique_hashes.append(cand_ph)
+                self._clear_candidate()
+                return
+            if phash_ambiguous:
+                log.info("[detect] phash near-match OVERRIDDEN by distinct OCR "
+                         "text (%d words) → committing as a new slide", len(sig))
 
             # COMMIT
             self.unique_hashes.append(cand_ph)
@@ -2246,6 +2622,11 @@ class LivePipeline:
         # Stage 2 filler removal: fresh backlog coordinate space per loop run.
         self._buf_out_seq = 0
         last_filler_post = 0.0      # wall-clock of last snapshot posted
+        # Time-stretch catch-up: fractional accumulator. Each CATCHUP tick adds
+        # (rate - 1.0); when it reaches 1.0 we owe one frame, so we consume an
+        # extra buffered frame and crossfade it into the emitted one.
+        stretch_debt: float = 0.0
+        last_stretch_log = 0.0
 
         # Wallclock pacing — produce 1 frame per FRAME_MS so PTS stays aligned
         # with real time even if speaker_q is sometimes empty.
@@ -2506,9 +2887,13 @@ class LivePipeline:
                 # there's a real backlog to clean, the worker is idle, and not
                 # more often than every 1.5s (bounds CPU). Non-blocking; the
                 # worker fills self._filler_drop_seqs with filler frame seqs.
+                # Post a snapshot whenever there is roughly half a second of
+                # backlog. Thresholds were 50 frames / 1.5 s, tuned when the
+                # backlog sat at 15-20 s; with the delay line holding ~2 s they
+                # fired rarely, which is why almost no fillers were removed.
                 if (not self._filler_disabled
-                        and len(speaker_buffer) >= 50          # ≥ ~1s backlog
-                        and (time.time() - last_filler_post) >= 1.5
+                        and len(speaker_buffer) >= 25          # ≥ ~0.5s backlog
+                        and (time.time() - last_filler_post) >= 0.75
                         and self._filler_snap_q.empty()):
                     try:
                         self._filler_snap_q.put_nowait(
@@ -2525,6 +2910,12 @@ class LivePipeline:
                 # shrinking the listener's lag. Short pauses (< keep floor)
                 # are preserved so speech rhythm stays natural.
                 buf = None
+                # Reclaim only from backlog ABOVE the delay-line floor. At or
+                # below the floor we pass through 1:1, which holds the delay
+                # line steady (one frame in, one frame out) instead of draining
+                # it to zero — draining would remove the window Whisper needs
+                # and then re-forming it would punch a gap into the stream.
+                at_floor = len(speaker_buffer) <= FILLER_DELAY_FRAMES
                 if self._compression_disabled:
                     # Debug fallback: pass through 1:1, no reclaim.
                     buf = speaker_buffer.popleft()
@@ -2538,26 +2929,59 @@ class LivePipeline:
                         self._mixer_speaker_pos += 1
                         # Stage 2: filler reclaim — Whisper flagged this frame
                         # as inside an "um/uh/…". Drop it (reclaim time).
+                        # ALWAYS applies, including at the floor: removing a
+                        # filler is the whole purpose of the delay line, and it
+                        # reclaims delay rather than adding it.
                         if seq in self._filler_drop_seqs:
                             self._filler_drop_seqs.discard(seq)
                             self._filler_frames_removed_total += 1
                             continue
-                        # Silence reclaim.
-                        if _frame_peak_int16(cand) < SILENCE_PEAK:
-                            silence_run_frames += 1
-                            if silence_run_frames > SILENCE_KEEP_FRAMES:
-                                # Past the keep floor — drop (reclaim time).
-                                self._stats["silence_skipped"] += 1
-                                self._silence_dropped_total_frames += 1
-                                continue
-                        else:
-                            silence_run_frames = 0
+                        # Silence reclaim — only on backlog above the floor.
+                        # Trimming silence at the floor would collapse the
+                        # delay line that filler detection depends on.
+                        if not at_floor:
+                            if _frame_peak_int16(cand) < SILENCE_PEAK:
+                                silence_run_frames += 1
+                                if silence_run_frames > SILENCE_KEEP_FRAMES:
+                                    # Past the keep floor — drop (reclaim time).
+                                    self._stats["silence_skipped"] += 1
+                                    self._silence_dropped_total_frames += 1
+                                    continue
+                            else:
+                                silence_run_frames = 0
                         buf = cand
                         break
                     if buf is None:
                         # Buffer emptied while dropping silence — emit silence
                         # this tick to keep the 50fps cadence intact.
                         buf = silence_buf
+
+                # ── Time-stretch catch-up ────────────────────────────────
+                # Silence/filler reclaim above only helps when the speaker
+                # pauses. This drains the backlog even through continuous
+                # speech: play slightly faster by consuming two buffered
+                # frames and emitting one crossfaded blend (pitch preserved,
+                # no speech deleted). Skipped when we're already at target.
+                rate = 1.0
+                if (not self._compression_disabled
+                        and buf is not silence_buf
+                        and speaker_buffer):
+                    rate = _catchup_rate_for(len(speaker_buffer) * FRAME_MS)
+                    if rate > 1.0:
+                        stretch_debt += (rate - 1.0)
+                        if stretch_debt >= 1.0 and speaker_buffer:
+                            seq2 = self._buf_out_seq
+                            nxt = speaker_buffer.popleft()
+                            self._buf_out_seq += 1
+                            self._mixer_speaker_pos += 1
+                            self._filler_drop_seqs.discard(seq2)
+                            buf = _crossfade_frames(buf, nxt)
+                            stretch_debt -= 1.0
+                            self._timestretch_frames_removed_total += 1
+                    else:
+                        stretch_debt = 0.0
+                self._catchup_rate_latest = rate
+
                 push_mixed(buf)
                 tick_source = "speaker_buffered"
                 # Pause-coupling: update last_audible_ts if what we emitted
@@ -2568,6 +2992,20 @@ class LivePipeline:
                     last_audible_ts = time.time()
 
                 self.speaker_buffer_ms = len(speaker_buffer) * FRAME_MS
+                # Periodic time-stretch telemetry (for latency analysis).
+                if rate > 1.0 and (time.time() - last_stretch_log) >= 5.0:
+                    last_stretch_log = time.time()
+                    reclaimed_s = (self._timestretch_frames_removed_total
+                                   * FRAME_MS / 1000.0)
+                    log.info("[stretch] rate=%.2fx backlog=%.1fs "
+                             "reclaimed_total=%.1fs", rate,
+                             self.speaker_buffer_ms / 1000.0, reclaimed_s)
+                    diag_events.record(
+                        "mixer", "catchup_stretch",
+                        rate=round(rate, 3),
+                        buf_ms=self.speaker_buffer_ms,
+                        frames_removed_total=self._timestretch_frames_removed_total,
+                        reclaimed_s=round(reclaimed_s, 2))
                 # Caught up?
                 if not speaker_buffer and self.speaker_q.qsize() <= 2:
                     self.mixer_state = "LIVE"
@@ -2588,6 +3026,22 @@ class LivePipeline:
                 # starves and PTS stays continuous. Silence pads do NOT
                 # advance _mixer_speaker_pos (nothing from the capture stream
                 # actually reached the listener).
+                push_mixed(silence_buf)
+                tick_source = "silence"
+            elif (FILLER_DELAY_FRAMES > 0 and not self._filler_disabled
+                    and not self._compression_disabled):
+                # Prime the filler-removal delay line instead of emitting 1:1.
+                # Whisper can only flag words it has already seen, so it needs a
+                # short backlog to work on. Once the line is full we switch to
+                # CATCHUP, which drains it (with filler removal) one frame per
+                # tick. This costs FILLER_DELAY_MS of listener delay and only
+                # happens at stream start — the CATCHUP floor keeps the line
+                # from collapsing afterwards, so there is no mid-stream gap.
+                speaker_buffer.append(spk)
+                if len(speaker_buffer) >= FILLER_DELAY_FRAMES:
+                    self.mixer_state = "CATCHUP"
+                    log.info("[filler] delay line primed (%dms) — "
+                             "filler removal active", FILLER_DELAY_MS)
                 push_mixed(silence_buf)
                 tick_source = "silence"
             else:

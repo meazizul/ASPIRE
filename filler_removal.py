@@ -18,13 +18,21 @@ Design notes:
 from __future__ import annotations
 
 import logging
+import os
 from typing import List, Optional, Set
 
 import numpy as np
 
 log = logging.getLogger("aspire.filler")
 
-MODEL_SIZE = "tiny"
+# "base" rather than "tiny". Measured: with tiny, only ~2 s of filler was found
+# across a 16-minute talk even though the backlog sat at 5-15 s for ~35% of the
+# run — so the limit was the model's transcription accuracy, not the amount of
+# audio available to analyze. Non-lexical fillers ("um", "uh") are exactly the
+# tokens a tiny model drops or mis-transcribes. base is ~2x the compute but
+# still int8-on-CPU and runs off the real-time path, so it costs no latency.
+# Override with ASPIRE_FILLER_MODEL (tiny | base | small).
+MODEL_SIZE = os.environ.get("ASPIRE_FILLER_MODEL", "base")
 FRAME_MS = 20                 # must match pipeline.FRAME_MS
 SRC_RATE = 48_000            # capture/mixer rate
 SRC_CHANNELS = 2

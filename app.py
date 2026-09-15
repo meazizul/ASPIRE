@@ -291,6 +291,13 @@ class PerPeerAudioTrack(MediaStreamTrack):
         self._sample_rate = SAMPLE_RATE
         self._samples_per_frame = SAMPLES_PER_FRAME
         self._recv_count = 0
+        # Wall-clock deadline for the next frame. asyncio.sleep() always
+        # overshoots slightly (~3ms on a 20ms sleep), so pacing with a fixed
+        # sleep made the playhead drift ~150ms/s behind the ring head until it
+        # tripped the 4s underrun snap — an audible 4-SECOND CUT every ~30s.
+        # Pacing to an absolute deadline removes the drift entirely. (Same
+        # pattern the mixer uses for its 50fps emit loop.)
+        self._next_send: Optional[float] = None
 
     async def recv(self) -> AudioFrame:
         recv_t0 = time.time()
@@ -298,11 +305,23 @@ class PerPeerAudioTrack(MediaStreamTrack):
         ring = pipeline.ring
         sess = self._session
 
-        # Pace at wall-clock 50 fps so RTP timestamps stay aligned even if
-        # the producer momentarily falls behind.
-        await asyncio.sleep(FRAME_MS / 1000.0)
+        # Pace at wall-clock 50 fps against an ABSOLUTE deadline (not a fixed
+        # sleep) so no drift accumulates — see _next_send in __init__.
+        period = FRAME_MS / 1000.0
+        now_w = time.time()
+        if self._next_send is None:
+            self._next_send = now_w + period
+        else:
+            self._next_send += period
+        delay = self._next_send - now_w
+        if delay > 0:
+            await asyncio.sleep(delay)
+        elif delay < -0.5:
+            # Event loop stalled badly — resync rather than spin.
+            self._next_send = time.time() + period
 
-        from pipeline import (PEER_INITIAL_LAG_FRAMES, PEER_UNDERRUN_FRAMES)
+        from pipeline import (PEER_INITIAL_LAG_FRAMES, PEER_UNDERRUN_FRAMES,
+                              PEER_GENTLE_CATCHUP_FRAMES)
 
         head = ring.head()
 
@@ -316,6 +335,11 @@ class PerPeerAudioTrack(MediaStreamTrack):
                         sess.peer_id, behind)
             sess.playhead = max(0, head - PEER_INITIAL_LAG_FRAMES)
             underrun = True
+        elif behind > PEER_GENTLE_CATCHUP_FRAMES:
+            # Drifted a little (clock jitter). Skip ONE 20ms frame — inaudible
+            # — instead of letting it grow into a 4s snap. Emergency snap above
+            # should now essentially never fire.
+            sess.playhead += 1
 
         buf = ring.get(sess.playhead)
         if buf is None:
@@ -444,8 +468,38 @@ async def webrtc_stop():
     return {"running": False}
 
 
+def _sweep_dead_peers() -> int:
+    """Drop peer connections that are already dead from the live set.
+
+    The per-connection close handler normally removes them, but connections
+    that die during negotiation can slip past it — measured: 137 offers, only
+    9 ever reached `connected`, yet 129 objects stayed registered over a
+    6-hour run (growth ~0.36/min). Each stale entry also keeps its
+    PerPeerAudioTrack and PeerSession alive.
+
+    This is a belt-and-braces sweep on a state the connection itself reports,
+    so it cannot evict a healthy peer. Returns how many were reaped.
+    """
+    dead = [pc for pc in list(_pcs)
+            if pc.connectionState in ("closed", "failed")]
+    for pc in dead:
+        _pcs.discard(pc)
+    if dead:
+        log.info("[webrtc] swept %d dead peer connection(s), %d live",
+                 len(dead), len(_pcs))
+    # Drop peer sessions whose connection is gone, so PerPeerAudioTrack state
+    # doesn't accumulate either.
+    if dead and _peer_sessions:
+        live_ids = {getattr(t, "_session", None) and t._session.peer_id
+                    for pc in _pcs for t in pc.getSenders() if t.track}
+        for pid in [p for p in list(_peer_sessions) if p not in live_ids]:
+            _peer_sessions.pop(pid, None)
+    return len(dead)
+
+
 @app.get("/webrtc/status")
 def webrtc_status():
+    _sweep_dead_peers()
     return get_pipeline().status() | {"peers": len(_pcs)}
 
 
@@ -492,6 +546,10 @@ async def webrtc_offer(request: Request):
         except Exception as e:
             log.warning("[offer] kokoro warm-up failed: %s", e)
         await pipeline.start()
+
+    # Reap anything already dead before registering a new one, so repeated
+    # reconnects can't accumulate stale entries.
+    _sweep_dead_peers()
 
     pc = RTCPeerConnection()
     _pcs.add(pc)

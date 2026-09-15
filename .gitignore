@@ -53,3 +53,6 @@ models/kokoro/voices-v1.0.bin
 .claude/
 SESSION_STATE.md
 GUIDE.md
+
+# Third-party reference papers (not ours to redistribute)
+paper.pdf

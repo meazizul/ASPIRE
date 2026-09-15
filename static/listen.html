@@ -91,8 +91,8 @@
       or press <kbd>Ctrl</kbd> + <kbd>P</kbd> &nbsp;<span class="text-gray-600">(works without looking at the screen)</span>
     </div>
     <label class="mt-6 inline-flex items-center gap-2 text-xs text-gray-500 cursor-pointer select-none">
-      <input id="lowLatencyToggle" type="checkbox" class="accent-emerald-500">
-      Low-latency mode (WebRTC, experimental)
+      <input id="lowLatencyToggle" type="checkbox" class="accent-emerald-500" checked>
+      Low-latency mode (WebRTC) — uncheck to fall back to HLS
     </label>
   </section>
 
@@ -247,7 +247,9 @@ const $bufferWrap=$("bufferWrap"), $bufferBar=$("bufferBar"), $bufferDetail=$("b
 const $liveDot=$("liveDot"), $liveText=$("liveText"), $hdrListeners=$("hdrListeners"), $sr=$("sr");
 const $eq=$("eq"), $nsState=$("nsState");
 
-const PREBUFFER_S = 5;
+// Player-side cushion before playback starts. This is pure listener delay:
+// every second here is a second behind live. Was 5 s (very safe, very slow).
+const PREBUFFER_S = 1;
 
 let mode = "http";
 let pc=null, peerId=null, statsTimer=null, pollTimer=null;
@@ -296,27 +298,45 @@ function ingestDescriptions(items){
   renderLog();
 }
 
+let lastRenderedCount = -1;
+function fmtAgo(t){ return Math.max(0, Math.round((Date.now()/1000) - t)) + "s ago"; }
+// Update just the seconds counters in place — no list rebuild, so nothing
+// flashes/dims; the entries stay solid and only the "Ns ago" ticks up.
+function updateAgo(){
+  document.querySelectorAll("#captions .agoTick").forEach(el => {
+    const t = parseFloat(el.dataset.t);
+    if (!isNaN(t)) el.textContent = fmtAgo(t);
+  });
+}
 function renderLog(){
   $logCount.textContent = String(slideLog.length);
   if (!slideLog.length){
-    $caps.innerHTML = '<li class="text-gray-600 italic text-sm">no slide descriptions yet…</li>';
+    if (lastRenderedCount !== 0){
+      $caps.innerHTML = '<li class="text-gray-600 italic text-sm">no slide descriptions yet…</li>';
+      lastRenderedCount = 0;
+    }
     return;
   }
+  // Only rebuild the list when the entries actually change. Re-rendering on
+  // every status poll is what made the newest entry re-run its fade animation
+  // and appear to dim/flash. When unchanged, just tick the seconds counters.
+  if (slideLog.length === lastRenderedCount){ updateAgo(); return; }
+  lastRenderedCount = slideLog.length;
   $caps.innerHTML = "";
-  slideLog.slice().reverse().forEach((it, idx) => {
-    const ago = Math.max(0, Math.round((Date.now()/1000) - it.t));
+  slideLog.slice().reverse().forEach((it) => {
     const li = document.createElement("li");
-    li.className = "flex gap-3 items-start" + (idx===0 ? " pop" : "");
+    li.className = "flex gap-3 items-start";
     li.innerHTML =
       '<span class="shrink-0 mono text-[11px] px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 mt-0.5">'
         + (it.n!=null ? ("#"+it.n) : "•") + '</span>'
       + '<div class="min-w-0">'
         + '<div class="text-sm text-gray-200 leading-snug">' + escapeHtml(it.body) + '</div>'
-        + '<div class="text-[11px] text-gray-600 mt-0.5 mono">' + ago + 's ago</div>'
+        + '<div class="agoTick text-[11px] text-gray-600 mt-0.5 mono" data-t="' + it.t + '">' + fmtAgo(it.t) + '</div>'
       + '</div>';
     $caps.appendChild(li);
   });
 }
+setInterval(updateAgo, 1000);
 
 // ── HTTP / HLS playback ────────────────────────────────────────────────────
 async function waitForPlaylist(){
@@ -371,8 +391,11 @@ async function startHttp(){
   } else if (window.Hls && Hls.isSupported()){
     if (hls){ try{ hls.destroy(); }catch(_){ } }
     hls = new Hls({
-      liveSyncDuration:6, liveMaxLatencyDuration:15, maxBufferLength:30,
-      maxMaxBufferLength:60, backBufferLength:60, lowLatencyMode:false,
+      // Latency-tuned: liveSyncDuration is how far behind the live edge the
+      // player deliberately sits (was 6 s). With 2 s segments, 2 s is about the
+      // floor that still survives a hiccup.
+      liveSyncDuration:2, liveMaxLatencyDuration:6, maxBufferLength:10,
+      maxMaxBufferLength:20, backBufferLength:30, lowLatencyMode:true,
       liveDurationInfinity:true, manifestLoadingRetryDelay:500, manifestLoadingMaxRetry:12,
       levelLoadingRetryDelay:500, levelLoadingMaxRetry:12, autoStartLoad:true, startFragPrefetch:true,
     });
@@ -391,15 +414,67 @@ async function startHttp(){
 }
 
 // ── WebRTC playback ─────────────────────────────────────────────────────────
+// Auto-reconnect state. rtcGeneration invalidates callbacks from superseded
+// connections so an old pc can't fight the new one.
+let rtcGeneration = 0, reconnectAttempt = 0, reconnectTimer = null;
+
+function scheduleReconnect(){
+  if (mode !== "webrtc") return;
+  if (reconnectTimer) return;               // one attempt in flight
+  setLive("reconnecting");
+  // Back off 0.5s, 1s, 2s, 4s … capped at 8s, then keep retrying at 8s.
+  const delay = Math.min(8000, 500 * Math.pow(2, Math.min(reconnectAttempt, 4)));
+  reconnectAttempt++;
+  reconnectTimer = setTimeout(async ()=>{
+    reconnectTimer = null;
+    try {
+      await negotiateWebRTC();              // full renegotiation, new peer_id
+    } catch(_){
+      scheduleReconnect();                  // still down — try again
+    }
+  }, delay);
+}
+
+// Phones suspend WebRTC when the tab is backgrounded or the screen locks.
+// Re-check on resume and reconnect if the connection died while hidden.
+document.addEventListener("visibilitychange", ()=>{
+  if (document.visibilityState === "visible" && mode === "webrtc" && pc
+      && ["failed","disconnected","closed"].includes(pc.connectionState)){
+    reconnectAttempt = 0;
+    scheduleReconnect();
+  }
+});
+
 async function negotiateWebRTC(){
-  if (pc){ try{ pc.close(); }catch(_){ } }
+  // Retire the previous connection FIRST: bump the generation so its handler
+  // is already stale, and detach the handler outright, before calling close().
+  //
+  // Ordering matters. close() synchronously fires the old connection's
+  // onconnectionstatechange with "closed"; when the generation was bumped
+  // *after* this, that handler still looked current, passed the stale-guard,
+  // and called scheduleReconnect() — so every reconnect scheduled another one.
+  // Measured: 136 peer connections created in 47 minutes against only 14 real
+  // disconnects.
+  const myGen = ++rtcGeneration;
+  if (pc){
+    try{ pc.onconnectionstatechange = null; pc.ontrack = null; pc.close(); }catch(_){ }
+  }
   pc = new RTCPeerConnection({ iceServers:[{urls:"stun:stun.l.google.com:19302"}] });
   pc.addTransceiver("audio",{direction:"recvonly"});
   pc.ontrack = (ev)=>{ $audio.srcObject=ev.streams[0]; $audio.play().catch(()=>{}); };
   pc.onconnectionstatechange = ()=>{
-    if (pc.connectionState==="connected"){ setLive("live"); announce("Live"); }
+    if (myGen !== rtcGeneration) return;   // stale connection, ignore
+    if (pc.connectionState==="connected"){
+      setLive("live"); announce("Live"); reconnectAttempt = 0;
+    }
     else if (pc.connectionState==="connecting"){ setLive("starting"); }
-    else if (["failed","disconnected"].includes(pc.connectionState)){ setLive("reconnecting"); }
+    // A dropped WebRTC connection used to just set the label to "reconnecting"
+    // and stop — audio went silent until the listener manually refreshed the
+    // page. Phones drop the connection routinely (screen lock, backgrounding
+    // the tab, WiFi handover), so recover automatically instead.
+    else if (["failed","disconnected","closed"].includes(pc.connectionState)){
+      scheduleReconnect();
+    }
   };
   const offer = await pc.createOffer(); await pc.setLocalDescription(offer);
   const ans = await fetch("/webrtc/offer",{method:"POST",headers:{"Content-Type":"application/json"},

@@ -46,9 +46,35 @@ def get_kokoro():
     return _kokoro
 
 
+import re as _re_num
+
+# Kokoro's text frontend treats a period as a sentence break, so "261.5" is
+# spoken as "two hundred sixty-one." <pause> "five", and a thousands separator
+# splits "1,053" into "one" <pause> "fifty-three". Both were reported as
+# unintelligible by listeners. Normalizing the text before synthesis removes the
+# ambiguity — the decimal point becomes the spoken word "point", and grouping
+# commas are simply dropped so the number reads as a single quantity.
+_DECIMAL_RE = _re_num.compile(r"(?<=\d)\.(?=\d)")
+_THOUSANDS_RE = _re_num.compile(r"(?<=\d),(?=\d{3}\b)")
+
+
+def normalize_numbers_for_speech(text: str) -> str:
+    """Make numerals unambiguous for the TTS frontend.
+
+    "EUR 261.5 billion" -> "EUR 261 point 5 billion"
+    "1,053 patients"    -> "1053 patients"
+    """
+    if not text:
+        return text
+    out = _THOUSANDS_RE.sub("", text)
+    out = _DECIMAL_RE.sub(" point ", out)
+    return out
+
+
 def _synth_blocking(text: str, voice: str, speed: float, lang: str
                     ) -> Tuple[np.ndarray, int]:
     k = get_kokoro()
+    text = normalize_numbers_for_speech(text)
     samples, sr = k.create(text, voice=voice, speed=speed, lang=lang)
     samples = np.asarray(samples, dtype=np.float32)
     if samples.ndim > 1:
