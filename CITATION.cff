@@ -1,0 +1,37 @@
+cff-version: 1.2.0
+message: "If you use ASPIRE in research, please cite the DIS 2026 paper and the ASSETS 2026 demonstration below, and link to this repository."
+title: "ASPIRE: Accessible Slide Presentation via Intelligent Real-time Editing"
+type: software
+authors:
+  - family-names: Haque
+    given-names: Azizul
+    affiliation: Stevens Institute of Technology
+    orcid: https://orcid.org/0009-0004-4081-7442
+  - family-names: Hong
+    given-names: Jonggi
+    affiliation: Stevens Institute of Technology
+repository-code: https://github.com/meazizul/ASPIRE
+url: https://azizulhaque.me/aspire/
+license: PolyForm-Noncommercial-1.0.0
+preferred-citation:
+  type: conference-paper
+  title: "Enhancing Slide Presentation Accessibility for Blind and Low-Vision Audiences Through Delay-Buffered Editing"
+  authors:
+    - family-names: Haque
+      given-names: Azizul
+    - family-names: Hong
+      given-names: Jonggi
+  collection-title: "Proceedings of the 2026 ACM Designing Interactive Systems Conference (DIS '26)"
+  year: 2026
+  doi: 10.1145/3800645.3812965
+references:
+  - type: conference-paper
+    title: "ASPIRE: Accessible Slide Presentation via Intelligent Real-time Editing"
+    authors:
+      - family-names: Haque
+        given-names: Azizul
+      - family-names: Hong
+        given-names: Jonggi
+    collection-title: "Proceedings of the 28th International ACM SIGACCESS Conference on Computers and Accessibility (ASSETS '26)"
+    year: 2026
+    doi: 10.1145/3797867.3841220

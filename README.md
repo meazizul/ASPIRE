@@ -1,5 +1,7 @@
 # Aspire
 
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENSE)
+
 **Real-time accessibility narration for slide presentations.** Aspire is a
 macOS application designed for blind and low-vision (BLV) audiences
 listening to remote slide presentations. It captures the presenter's Mac
@@ -352,7 +354,9 @@ filler_removal.py      Whisper ("tiny") filler-word detection for time reclaim  
 diag_events.py         Diagnostic event writer (JSONL)
 diag_analyze.py        Post-run diagnostic analyzer
 static/listen.html     Listener dashboard (slide log, now-speaking, metrics)
-tools/systemAudioDump/ Swift CLI — ScreenCaptureKit system-audio capture
+tools/systemAudioDump/ Swift CLI — ScreenCaptureKit system-audio capture (MIT, third-party)
+LICENSE                PolyForm Noncommercial 1.0.0
+CITATION.cff           Citation metadata (GitHub "Cite this repository")
 ```
 
 ---
@@ -366,10 +370,40 @@ Implementation of techniques described in:
 > Proceedings of the ACM Conference on Designing Interactive Systems (DIS
 > 2026). DOI: [10.1145/3800645.3812965](https://doi.org/10.1145/3800645.3812965)
 
+> Haque, A., & Hong, J. (2026). *ASPIRE: Accessible Slide Presentation via
+> Intelligent Real-time Editing.* Proceedings of the 28th International ACM
+> SIGACCESS Conference on Computers and Accessibility (ASSETS 2026), demo.
+> DOI: [10.1145/3797867.3841220](https://doi.org/10.1145/3797867.3841220)
+
 The DIS 2026 paper details the formative user study (n = 12 BLV
-participants) that motivated this design, and the underlying delay-
-buffered editing technique. Prior work: the ASSETS 2025 poster on Wizard-
-of-Oz delay-buffered editing.
+participants) that motivated this design and the underlying delay-buffered
+editing technique; the ASSETS 2026 demo describes the first real-time
+version. Prior work: the ASSETS 2025 poster on Wizard-of-Oz delay-buffered
+editing.
+
+---
+
+## License and Citation
+
+Copyright 2025-2026 Azizul Haque and Jonggi Hong, Stevens Institute of
+Technology. All rights reserved except as granted below.
+
+This repository is released under the **PolyForm Noncommercial License
+1.0.0** (see [LICENSE](LICENSE)). In short:
+
+- **Academic, research, personal and other noncommercial use is permitted**,
+  including modifying the code and sharing your changes, as long as you keep
+  the license and the copyright notice with any copy.
+- **Commercial use is not permitted** under this license. ASPIRE is being
+  commercialized; for commercial licensing, integration, or partnership,
+  contact <ahaque3@stevens.edu>.
+- Third-party components keep their own licenses. `tools/systemAudioDump`
+  is MIT-licensed by its original author.
+
+If you use ASPIRE in research, please cite the DIS 2026 paper and the
+ASSETS 2026 demo above and link to this repository. A machine-readable
+[CITATION.cff](CITATION.cff) is included; GitHub's "Cite this repository"
+button uses it.
 
 ---
 
